@@ -3,8 +3,9 @@ import { Activity, CheckCircle, XCircle, Loader, Radio, Send, Mic, Volume2, User
 
 const config = {
   backendUrl: 'https://ai-speech-demo-hhhma9dyakhzh0e6.westus2-01.azurewebsites.net',
+  backendHttp: 'https://ai-speech-demo-hhhma9dyakhzh0e6.westus2-01.azurewebsites.net',
   backendWs: 'wss://ai-speech-demo-hhhma9dyakhzh0e6.westus2-01.azurewebsites.net',
-  pythonUrl: 'http://localhost:8000'  // Changed from ngrok to localhost
+  pythonUrl: 'https://ai-python-backend-cqdpf4f7a7h0d3en.westus2-01.azurewebsites.net'
 };
 
 const TestStatus = ({ status, children }) => {
@@ -45,7 +46,12 @@ export default function VoiceBackendTester() {
   // Meeting states
   const [isMeetingConnected, setIsMeetingConnected] = useState(false);
   const [isRecordingMeeting, setIsRecordingMeeting] = useState(false);
-  
+
+  // RAG testing states
+  const [patientId, setPatientId] = useState(3103);
+  const [patientContextSent, setPatientContextSent] = useState(false);
+  const [aiResponses, setAiResponses] = useState([]);
+
   const wsRef = useRef(null);
   const enrollWsRef = useRef(null);
   const meetingMediaRecorderRef = useRef(null);
@@ -148,8 +154,9 @@ export default function VoiceBackendTester() {
     ws.onopen = () => {
       updateTest('meetingWs', { status: 'success', result: 'Connected' });
       setIsMeetingConnected(true);
+      setPatientContextSent(false);
       addLog('✅ Connected to /meeting - Ready to receive messages', 'success');
-      
+
       // Auto-start recording after connection established
       setTimeout(() => {
         startMeetingRecording();
@@ -172,6 +179,17 @@ export default function VoiceBackendTester() {
         if (message.type === 'tts_audio') {
           if (message.audio || message.audioBase64) {
             const audioData = message.audio || message.audioBase64;
+
+            // Check if this is an AI response (providerId === 0)
+            if (message.providerId === 0) {
+              addLog(`🤖 AI Response: ${message.text}`, 'success');
+              setAiResponses(prev => [...prev, {
+                text: message.text,
+                timestamp: Date.now(),
+                providerName: message.providerName || 'AI Assistant'
+              }].slice(-10)); // Keep last 10 responses
+            }
+
             addLog(`🔊 TTS Audio received (${audioData.length} chars) - Auto-playing...`, 'success');
             playWebSocketAudio(audioData, 'TTS Response');
           } else {
@@ -216,13 +234,42 @@ export default function VoiceBackendTester() {
   const disconnectMeetingWebSocket = () => {
     // Stop recording first
     stopMeetingRecording();
-    
+
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
       setIsMeetingConnected(false);
+      setPatientContextSent(false);
       updateTest('meetingWs', { status: 'idle', result: 'Disconnected' });
       addLog('⚪ Meeting WebSocket disconnected', 'info');
+    }
+  };
+
+  // Send Patient Context via HTTP (like TTS)
+  const sendPatientContext = async () => {
+    try {
+      addLog(`📤 Sending patient context via HTTP...`, 'info');
+
+      const response = await fetch(`${config.backendHttp}/api/meeting/patient`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          patientId: patientId
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      setPatientContextSent(true);
+      addLog(`✅ Patient context set: ${result.message}`, 'success');
+
+    } catch (error) {
+      addLog(`❌ Failed to send patient context: ${error.message}`, 'error');
     }
   };
 
@@ -688,7 +735,7 @@ useEffect(() => {
             <Radio className="w-6 h-6 text-green-400" />
             Meeting WebSocket (Persistent Connection)
           </h3>
-          
+
           <div className="space-y-4">
             <div className="flex items-center gap-3">
               <div className={`w-3 h-3 rounded-full ${isMeetingConnected ? 'bg-green-500 animate-pulse' : 'bg-slate-600'}`} />
@@ -699,6 +746,12 @@ useEffect(() => {
                 <div className="flex items-center gap-2 text-red-400 animate-pulse">
                   <Mic className="w-4 h-4" />
                   <span className="text-xs">LIVE</span>
+                </div>
+              )}
+              {patientContextSent && (
+                <div className="flex items-center gap-2 text-cyan-400">
+                  <Users className="w-4 h-4" />
+                  <span className="text-xs">Patient: {patientId}</span>
                 </div>
               )}
             </div>
@@ -721,7 +774,7 @@ useEffect(() => {
                     <StopCircle className="w-4 h-4" />
                     Disconnect
                   </button>
-                  
+
                   {!isRecordingMeeting ? (
                     <button
                       onClick={startMeetingRecording}
@@ -748,6 +801,88 @@ useEffect(() => {
                 Messages received: {tests.meetingWs.messages.length}
               </TestStatus>
             </div>
+          </div>
+        </div>
+
+        {/* RAG Testing Section */}
+        <div className="bg-gradient-to-r from-cyan-500/10 to-blue-500/10 backdrop-blur rounded-lg p-6 mb-6 border border-cyan-500/30">
+          <h3 className="font-semibold mb-4 flex items-center gap-2 text-xl">
+            <Users className="w-6 h-6 text-cyan-400" />
+            RAG Patient Context Testing
+          </h3>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm text-slate-300 mb-2">Patient ID:</label>
+              <div className="flex gap-3">
+                <input
+                  type="number"
+                  value={patientId}
+                  onChange={(e) => setPatientId(parseInt(e.target.value))}
+                  disabled={!isMeetingConnected}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+                  min="1"
+                  placeholder="Enter patient ID (e.g., 3103)"
+                />
+                <button
+                  onClick={sendPatientContext}
+                  className="px-4 py-2 bg-cyan-600 rounded-lg hover:bg-cyan-700 transition flex items-center gap-2"
+                >
+                  <Send className="w-4 h-4" />
+                  Send Patient Context (HTTP)
+                </button>
+              </div>
+              <div className="text-xs text-slate-400 mt-1">
+                Uses HTTP POST to /api/meeting/patient (simpler than WebSocket)
+              </div>
+            </div>
+
+            {patientContextSent && (
+              <div className="text-sm text-cyan-400 flex items-center gap-2">
+                <CheckCircle className="w-4 h-4" />
+                Patient context sent. Now ask questions via voice:
+              </div>
+            )}
+
+            <div className="bg-slate-900 rounded-lg p-4 border border-slate-700">
+              <h4 className="text-sm font-semibold text-slate-300 mb-2">Test Questions to Ask via Voice:</h4>
+              <div className="text-xs text-slate-400 space-y-1">
+                <div>• "What imaging results do we have?"</div>
+                <div>• "What is the patient's diagnosis?"</div>
+                <div>• "What are the UTC admission criteria?"</div>
+                <div>• "What medications is the patient on?"</div>
+                <div>• "What are the health scores?"</div>
+              </div>
+            </div>
+
+            {aiResponses.length > 0 && (
+              <div className="bg-slate-900 rounded-lg p-4 border border-cyan-700">
+                <div className="flex justify-between items-center mb-3">
+                  <h4 className="text-sm font-semibold text-cyan-400">AI Responses ({aiResponses.length}):</h4>
+                  <button
+                    onClick={() => setAiResponses([])}
+                    className="text-xs px-2 py-1 bg-slate-700 rounded hover:bg-slate-600 transition"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {aiResponses.map((response, idx) => (
+                    <div key={idx} className="bg-slate-800 rounded p-3 border border-slate-700">
+                      <div className="flex items-start gap-2">
+                        <div className="text-cyan-400 text-xs font-semibold mt-1">🤖</div>
+                        <div className="flex-1">
+                          <div className="text-xs text-slate-400 mb-1">
+                            {new Date(response.timestamp).toLocaleTimeString()}
+                          </div>
+                          <div className="text-sm text-slate-200">{response.text}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
