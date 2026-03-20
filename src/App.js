@@ -1,1084 +1,609 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Activity, CheckCircle, XCircle, Loader, Radio, Send, Mic, Volume2, Users, MessageSquare, StopCircle } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  LogIn, LogOut, MessageSquare, Stethoscope, Calendar, TestTube2,
+  User, Copy, CheckCircle, Shield, Clock, Mic, Loader
+} from 'lucide-react';
+import { OAUTH_CONFIG, API_BASE, TEST_DATA, WELCOME_QUESTIONS, INSIDE_SCRUM_QUESTIONS, OUTSIDE_SCRUM_QUESTIONS, SYNTHETIC_PATIENTS } from './config';
+import ChatBox from './components/ChatBox';
+import VoiceAgentTester from './components/VoiceAgentTester';
 
-const config = {
-  backendUrl: 'https://ai-speech-demo-hhhma9dyakhzh0e6.westus2-01.azurewebsites.net',
-  backendHttp: 'https://ai-speech-demo-hhhma9dyakhzh0e6.westus2-01.azurewebsites.net',
-  backendWs: 'wss://ai-speech-demo-hhhma9dyakhzh0e6.westus2-01.azurewebsites.net',
-  pythonUrl: 'https://ai-python-backend-cqdpf4f7a7h0d3en.westus2-01.azurewebsites.net'
-};
+const TABS = [
+  { id: 'welcome', label: 'Welcome Chat', icon: MessageSquare, color: 'blue' },
+  { id: 'inside_scrum', label: 'Inside Scrum', icon: Stethoscope, color: 'green' },
+  { id: 'outside_scrum', label: 'Outside Scrum', icon: Calendar, color: 'purple' },
+  { id: 'ai_job', label: 'AI Job Tester', icon: TestTube2, color: 'orange' },
+  { id: 'voice_agent', label: 'Voice Agent', icon: Mic, color: 'red' },
+];
 
-const TestStatus = ({ status, children }) => {
-  const icons = {
-    idle: <Activity className="w-4 h-4 text-gray-400" />,
-    running: <Loader className="w-4 h-4 text-blue-500 animate-spin" />,
-    success: <CheckCircle className="w-4 h-4 text-green-500" />,
-    error: <XCircle className="w-4 h-4 text-red-500" />
-  };
-  
-  return (
-    <div className="flex items-center gap-2">
-      {icons[status]}
-      <span className={status === 'error' ? 'text-red-600' : ''}>{children}</span>
-    </div>
-  );
-};
-
-export default function VoiceBackendTester() {
-  const [tests, setTests] = useState({
-    health: { status: 'idle', result: null },
-    meetingWs: { status: 'idle', result: null, messages: [] },
-    enrollWs: { status: 'idle', result: null, messages: [] },
-    tts: { status: 'idle', result: null },
-    python: { status: 'idle', result: null },
-    fullFlow: { status: 'idle', result: null, events: [] }
+export default function App() {
+  const [token, setToken] = useState(() => localStorage.getItem('access_token'));
+  const [refreshToken, setRefreshToken] = useState(() => localStorage.getItem('refresh_token'));
+  const [tokenInfo, setTokenInfo] = useState(null);
+  const [activeTab, setActiveTab] = useState('welcome');
+  const [copied, setCopied] = useState(false);
+  const [authError, setAuthError] = useState(null);
+  const [selectedPatient, setSelectedPatient] = useState({
+    patientId: 3001,
+    patientName: 'Gilian Negata',
   });
-  
-  const [wsLogs, setWsLogs] = useState([]);
-  const [autoRefresh, setAutoRefresh] = useState(false);
-  const [customTTSText, setCustomTTSText] = useState("Patient shows good progress. Recommended massage therapy and continue current treatment plan.");
-  
-  // Enrollment states
-  const [isEnrolling, setIsEnrolling] = useState(false);
-  const [enrollmentUserNum, setEnrollmentUserNum] = useState(1);
-  const [isRecordingEnroll, setIsRecordingEnroll] = useState(false);
-  
-  // Meeting states
-  const [isMeetingConnected, setIsMeetingConnected] = useState(false);
-  const [isRecordingMeeting, setIsRecordingMeeting] = useState(false);
+  const [aiJobLoading, setAiJobLoading] = useState(false);
+  const [aiJobResult, setAiJobResult] = useState(null);
+  const [aiJobAllLoading, setAiJobAllLoading] = useState(false);
+  const [aiJobAllResult, setAiJobAllResult] = useState(null);
+  const [aiJobPatientId, setAiJobPatientId] = useState(3001);
 
-  // RAG testing states
-  const [patientId, setPatientId] = useState(3103);
-  const [patientContextSent, setPatientContextSent] = useState(false);
-  const [aiResponses, setAiResponses] = useState([]);
-
-  const wsRef = useRef(null);
-  const enrollWsRef = useRef(null);
-  const meetingMediaRecorderRef = useRef(null);
-  const mediaStreamRef = useRef(null);
-  const logsContainerRef = useRef(null);
-
-  useEffect(() => {
-  if (logsContainerRef.current) {
-    logsContainerRef.current.scrollTop =
-      logsContainerRef.current.scrollHeight;
-  }
-}, [wsLogs]);
-
-
-
-  const updateTest = (testName, updates) => {
-    setTests(prev => ({
-      ...prev,
-      [testName]: { ...prev[testName], ...updates }
-    }));
-  };
-
-  const addLog = (message, type = 'info') => {
-    setWsLogs(prev => [...prev.slice(-50), { 
-      time: new Date().toLocaleTimeString(), 
-      message, 
-      type 
-    }]);
-  };
-
-  // Helper function to convert base64 to Blob
-  const base64ToBlob = (base64, mimeType) => {
-    const byteCharacters = atob(base64);
-    const byteNumbers = new Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
-    }
-    const byteArray = new Uint8Array(byteNumbers);
-    return new Blob([byteArray], { type: mimeType });
-  };
-
-  // Play Audio from WebSocket
-  const playWebSocketAudio = (base64Audio, source = 'WebSocket') => {
+  // Parse JWT payload
+  const parseToken = useCallback((accessToken) => {
     try {
-      const audioBlob = base64ToBlob(base64Audio, 'audio/wav');
-      const audioUrl = URL.createObjectURL(audioBlob);
-      
-      const wsAudio = new Audio(audioUrl);
-      wsAudio.play();
-      addLog(`🔊 Auto-playing ${source} audio...`, 'success');
-      
-      wsAudio.onended = () => {
-        addLog(`⚪ ${source} audio finished`, 'info');
-        URL.revokeObjectURL(audioUrl);
-      };
-      
-      wsAudio.onerror = () => {
-        addLog(`❌ ${source} audio playback error`, 'error');
-        URL.revokeObjectURL(audioUrl);
-      };
-      
-    } catch (error) {
-      addLog(`❌ Failed to play ${source} audio: ${error.message}`, 'error');
-    }
-  };
-
-  // Test 1: Health Check
-  const testHealthCheck = useCallback(async () => {
-    updateTest('health', { status: 'running', result: null });
-    addLog('Testing health endpoint...', 'info');
-    
-    try {
-      const response = await fetch(`${config.backendUrl}/health`);
-      const data = await response.json();
-      updateTest('health', { status: 'success', result: data });
-      addLog('✅ Health check passed', 'success');
-    } catch (error) {
-      updateTest('health', { status: 'error', result: error.message });
-      addLog(`❌ Health check failed: ${error.message}`, 'error');
+      const payload = JSON.parse(atob(accessToken.split('.')[1]));
+      setTokenInfo({
+        name: payload.name,
+        upn: payload.upn || payload.preferred_username,
+        oid: payload.oid,
+        exp: new Date(payload.exp * 1000).toLocaleString(),
+        aud: payload.aud,
+        expTimestamp: payload.exp,
+      });
+      return payload;
+    } catch (e) {
+      console.error('Failed to parse token:', e);
+      return null;
     }
   }, []);
 
-  // Test 2: Meeting WebSocket - Persistent connection
-  const connectMeetingWebSocket = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      addLog('⚠️ Meeting WebSocket already connected', 'info');
+  // Check for OAuth callback result in URL on mount
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const error = url.searchParams.get('error');
+    const authSuccess = url.searchParams.get('auth_success');
+
+    if (error) {
+      setAuthError(url.searchParams.get('error_description') || error);
+      window.history.replaceState({}, document.title, '/');
       return;
     }
 
-    updateTest('meetingWs', { status: 'running', messages: [] });
-    addLog('Connecting to /meeting WebSocket...', 'info');
-    
-    if (wsRef.current) {
-      wsRef.current.close();
-    }
-    
-    const ws = new WebSocket(`${config.backendWs}/meeting`);
-    wsRef.current = ws;
-    
-    ws.onopen = () => {
-      updateTest('meetingWs', { status: 'success', result: 'Connected' });
-      setIsMeetingConnected(true);
-      setPatientContextSent(false);
-      addLog('✅ Connected to /meeting - Ready to receive messages', 'success');
-
-      // Auto-start recording after connection established
-      setTimeout(() => {
-        startMeetingRecording();
-      }, 100);
-    };
-    
-    ws.onmessage = (event) => {
+    if (authSuccess) {
+      // Tokens received from setupProxy callback handler
       try {
-        const message = JSON.parse(event.data);
-        updateTest('meetingWs', prev => ({
-          ...prev,
-          messages: [...prev.messages, message].slice(-20)
-        }));
-        
-        // Log ALL messages with full data for debugging
-        addLog(`📨 [${message.type}] ${JSON.stringify(message).substring(0, 200)}`, 'ws');
-        
-        // Handle different message types and auto-play audio
-        // Backend sends "audio" field, not "audioBase64"
-        if (message.type === 'tts_audio') {
-          if (message.audio || message.audioBase64) {
-            const audioData = message.audio || message.audioBase64;
-
-            // Check if this is an AI response (providerId === 0)
-            if (message.providerId === 0) {
-              addLog(`🤖 AI Response: ${message.text}`, 'success');
-              setAiResponses(prev => [...prev, {
-                text: message.text,
-                timestamp: Date.now(),
-                providerName: message.providerName || 'AI Assistant'
-              }].slice(-10)); // Keep last 10 responses
-            }
-
-            addLog(`🔊 TTS Audio received (${audioData.length} chars) - Auto-playing...`, 'success');
-            playWebSocketAudio(audioData, 'TTS Response');
-          } else {
-            addLog(`⚠️ TTS Audio message but no audio field`, 'error');
-          }
-        } else if (message.type === 'tts_summary') {
-          if (message.audio || message.audioBase64) {
-            const audioData = message.audio || message.audioBase64;
-            addLog(`🔊 TTS Summary audio received (${audioData.length} chars) - Auto-playing...`, 'success');
-            playWebSocketAudio(audioData, 'Summary');
-          } else {
-            addLog(`⚠️ TTS Summary message but no audio field`, 'error');
-            addLog(`📋 Message keys: ${Object.keys(message).join(', ')}`, 'info');
-          }
-        } else if (message.type === 'transcript') {
-          addLog(`📝 Transcript: ${message.speaker}: ${message.text}`, 'ws');
-        } else if (message.type === 'speaker_verified') {
-          addLog(`🗣️ Speaker verified: ${message.firstName || 'Unknown'}`, 'ws');
-        } else if (message.type === 'attendance_marked') {
-          addLog(`✅ Attendance: ${message.firstName || 'Unknown'}`, 'ws');
-        } else if (message.type === 'function_call') {
-          addLog(`🔧 Function: ${message.functionName}`, 'ws');
+        const data = JSON.parse(decodeURIComponent(authSuccess));
+        localStorage.setItem('access_token', data.accessToken);
+        if (data.refreshToken) {
+          localStorage.setItem('refresh_token', data.refreshToken);
+          setRefreshToken(data.refreshToken);
         }
-      } catch (error) {
-        addLog(`📨 Received (parse error): ${event.data.substring(0, 100)}`, 'ws');
+        setToken(data.accessToken);
+        parseToken(data.accessToken);
+        setAuthError(null);
+        console.log('Login successful');
+      } catch (e) {
+        setAuthError('Failed to parse auth response');
       }
-    };
-    
-    ws.onerror = (error) => {
-      updateTest('meetingWs', { status: 'error', result: 'Connection failed' });
-      setIsMeetingConnected(false);
-      addLog('❌ Meeting WebSocket error', 'error');
-    };
-    
-    ws.onclose = () => {
-      setIsMeetingConnected(false);
-      stopMeetingRecording();
-      addLog('⚪ Meeting WebSocket closed', 'info');
-    };
-  };
-
-  const disconnectMeetingWebSocket = () => {
-    // Stop recording first
-    stopMeetingRecording();
-
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-      setIsMeetingConnected(false);
-      setPatientContextSent(false);
-      updateTest('meetingWs', { status: 'idle', result: 'Disconnected' });
-      addLog('⚪ Meeting WebSocket disconnected', 'info');
-    }
-  };
-
-  // Send Patient Context via HTTP (like TTS)
-  const sendPatientContext = async () => {
-    try {
-      addLog(`📤 Sending patient context via HTTP...`, 'info');
-
-      const response = await fetch(`${config.backendHttp}/api/meeting/patient`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          patientId: patientId
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const result = await response.json();
-      setPatientContextSent(true);
-      addLog(`✅ Patient context set: ${result.message}`, 'success');
-
-    } catch (error) {
-      addLog(`❌ Failed to send patient context: ${error.message}`, 'error');
-    }
-  };
-
-  // Start/Stop Recording for Meeting
-  const startMeetingRecording = async () => {
-    if (isRecordingMeeting) {
-      addLog('⚠️ Already recording', 'info');
+      window.history.replaceState({}, document.title, '/');
       return;
     }
-    
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          sampleRate: 16000,
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true
-        }
-      });
-      
-      mediaStreamRef.current = stream;
-      
-      // Use AudioContext for proper PCM like production frontend
-      const AudioContext = window.AudioContext || window.webkitAudioContext;
-      const audioContext = new AudioContext({ sampleRate: 16000 });
-      
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume();
-      }
-      
-      const source = audioContext.createMediaStreamSource(stream);
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
-      
-      processor.onaudioprocess = (e) => {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-        
-        const input = e.inputBuffer.getChannelData(0);
-        // Convert Float32 [-1, 1] to Int16 (same as production)
-        const pcm16 = new Int16Array(input.length);
-        for (let i = 0; i < input.length; i++) {
-          let s = Math.max(-1, Math.min(1, input[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-        }
-        
-        // Send raw binary (same as production frontend)
-        wsRef.current.send(pcm16.buffer);
-      };
-      
-      source.connect(processor);
-      processor.connect(audioContext.destination);
-      
-      meetingMediaRecorderRef.current = { processor, audioContext, source };
-      setIsRecordingMeeting(true);
-      addLog('🎤 Started recording PCM audio for meeting...', 'success');
-      
-    } catch (error) {
-      addLog(`❌ Microphone access denied: ${error.message}`, 'error');
-    }
-  };
 
-  const stopMeetingRecording = () => {
-    if (meetingMediaRecorderRef.current && isRecordingMeeting) {
-      const { processor, audioContext, source } = meetingMediaRecorderRef.current;
-      
-      if (processor) processor.disconnect();
-      if (source) source.disconnect();
-      if (audioContext) audioContext.close();
-      
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      }
-      
-      meetingMediaRecorderRef.current = null;
-      setIsRecordingMeeting(false);
-      addLog('⏹️ Stopped meeting recording', 'info');
-    }
-  };
-
-  // Test 3: Enrollment WebSocket with Audio Streaming
-  const startEnrollment = async () => {
-    updateTest('enrollWs', { status: 'running', messages: [] });
-    addLog(`Starting enrollment for User ${enrollmentUserNum}...`, 'info');
-    
-    if (enrollWsRef.current) {
-      enrollWsRef.current.close();
-    }
-    
-    const ws = new WebSocket(`${config.backendWs}/enroll`);
-    enrollWsRef.current = ws;
-    
-    ws.onopen = () => {
-      updateTest('enrollWs', { status: 'success', result: 'Connected' });
-      setIsEnrolling(true);
-      addLog('✅ Connected to /enroll', 'success');
-      
-      // Send enrollment start
-      ws.send(JSON.stringify({ 
-        type: 'start', 
-        userNum: enrollmentUserNum 
-      }));
-      addLog(`📤 Sent enrollment start (userNum=${enrollmentUserNum})`, 'info');
-      
-      // Start recording audio
-      startEnrollmentRecording();
-    };
-    
-    ws.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        updateTest('enrollWs', prev => ({
-          ...prev,
-          messages: [...prev.messages, message].slice(-20)
-        }));
-        
-        if (message.type === 'enrollment_complete' || message.type === 'success') {
-          addLog(`✅ Enrollment successful!`, 'success');
-          stopEnrollment();
-        } else if (message.type === 'error') {
-          addLog(`❌ Enrollment error: ${message.message}`, 'error');
+    // If we have a stored token, parse it
+    if (token) {
+      const payload = parseToken(token);
+      if (payload && payload.exp * 1000 < Date.now()) {
+        if (refreshToken) {
+          refreshAccessToken();
         } else {
-          addLog(`📨 Enrollment: ${JSON.stringify(message)}`, 'ws');
+          handleLogout();
         }
-      } catch (error) {
-        addLog(`📨 Received: ${event.data.substring(0, 50)}`, 'ws');
       }
-    };
-    
-    ws.onerror = () => {
-      updateTest('enrollWs', { status: 'error', result: 'Connection failed' });
-      addLog('❌ Enrollment WebSocket error', 'error');
-      stopEnrollment();
-    };
-    
-    ws.onclose = () => {
-      addLog('⚪ Enrollment WebSocket closed', 'info');
-      setIsEnrolling(false);
-    };
-  };
-
-  const enrollmentAudioCtxRef = useRef(null);
-const enrollmentProcessorRef = useRef(null);
-const enrollmentStreamRef = useRef(null);
-
-const startEnrollmentRecording = async () => {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    enrollmentStreamRef.current = stream;
-
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    const audioCtx = new AudioCtx({ sampleRate: 16000 });
-    enrollmentAudioCtxRef.current = audioCtx;
-
-    if (audioCtx.state === 'suspended') {
-      await audioCtx.resume();
     }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const source = audioCtx.createMediaStreamSource(stream);
-    const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-    enrollmentProcessorRef.current = processor;
-
-    processor.onaudioprocess = (e) => {
-      if (!enrollWsRef.current || enrollWsRef.current.readyState !== WebSocket.OPEN) return;
-
-      const input = e.inputBuffer.getChannelData(0);
-
-      const pcm16 = new Int16Array(input.length);
-      for (let i = 0; i < input.length; i++) {
-        let s = Math.max(-1, Math.min(1, input[i]));
-        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-      }
-
-      // 🔑 THIS is what Eagle expects
-      enrollWsRef.current.send(pcm16.buffer);
-    };
-
-    source.connect(processor);
-    processor.connect(audioCtx.destination);
-
-    setIsRecordingEnroll(true);
-    addLog('🎤 Recording PCM audio for enrollment...', 'success');
-
-  } catch (err) {
-    addLog(`❌ Enrollment mic error: ${err.message}`, 'error');
-  }
-};
-
-
-  const stopEnrollment = () => {
-  // 🔹 Stop PCM audio pipeline
-  if (enrollmentProcessorRef.current) {
-    enrollmentProcessorRef.current.disconnect();
-    enrollmentProcessorRef.current = null;
-  }
-
-  if (enrollmentAudioCtxRef.current) {
-    enrollmentAudioCtxRef.current.close();
-    enrollmentAudioCtxRef.current = null;
-  }
-
-  if (enrollmentStreamRef.current) {
-    enrollmentStreamRef.current.getTracks().forEach(t => t.stop());
-    enrollmentStreamRef.current = null;
-  }
-
-  // 🔹 Close WebSocket
-  if (enrollWsRef.current) {
-    enrollWsRef.current.send(JSON.stringify({ type: 'stop' }));
-    enrollWsRef.current.close();
-    enrollWsRef.current = null;
-  }
-
-  setIsRecordingEnroll(false);
-  setIsEnrolling(false);
-  addLog('⏹️ Enrollment stopped', 'info');
-};
-
-
-  // Test 4: TTS Summary - Sends via HTTP, receives via Meeting WebSocket
-  const testTTSSummary = async () => {
-    if (!isMeetingConnected) {
-      addLog('⚠️ Meeting WebSocket not connected. Connect first to receive TTS audio!', 'error');
-      return;
-    }
-
-    updateTest('tts', { status: 'running', result: null });
-    addLog('Sending TTS request (audio will arrive via Meeting WebSocket)...', 'info');
-    
-    const testData = {
-      summary: customTTSText,
-      providerId: 1,
-      providerName: "Dr. Test"
-    };
-    
+  // Refresh expired access token via setupProxy endpoint
+  const refreshAccessToken = async () => {
     try {
-      const response = await fetch(`${config.backendUrl}/api/tts/summary`, {
+      const response = await fetch('/api/auth/refresh', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(testData)
+        body: JSON.stringify({ refreshToken }),
       });
-      
+
       const data = await response.json();
-      
-      updateTest('tts', { 
-        status: 'success', 
-        result: { message: data.message }
-      });
-      
-      addLog(`✅ TTS request sent: ${data.message}`, 'success');
-      addLog(`⏳ Waiting for audio via Meeting WebSocket...`, 'info');
-      
+
+      if (!data.success) {
+        handleLogout();
+        return;
+      }
+
+      localStorage.setItem('access_token', data.accessToken);
+      if (data.refreshToken) {
+        localStorage.setItem('refresh_token', data.refreshToken);
+        setRefreshToken(data.refreshToken);
+      }
+      setToken(data.accessToken);
+      parseToken(data.accessToken);
     } catch (error) {
-      updateTest('tts', { status: 'error', result: error.message });
-      addLog(`❌ TTS API failed: ${error.message}`, 'error');
+      console.error('Token refresh failed:', error);
+      handleLogout();
     }
   };
 
-  // Test 5: Python Service
-  const testPythonService = useCallback(async () => {
-    updateTest('python', { status: 'running', result: null });
-    addLog('Testing Python Eagle Service...', 'info');
-    
+  // Redirect to Microsoft login
+  const handleLogin = () => {
+    const params = new URLSearchParams({
+      client_id: OAUTH_CONFIG.clientId,
+      response_type: 'code',
+      redirect_uri: OAUTH_CONFIG.redirectUri,
+      scope: OAUTH_CONFIG.scope,
+      response_mode: 'query',
+      prompt: 'select_account',
+    });
+
+    window.location.href = `${OAUTH_CONFIG.authorizeUrl}?${params.toString()}`;
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    setToken(null);
+    setRefreshToken(null);
+    setTokenInfo(null);
+  };
+
+  const copyToken = () => {
+    if (token) {
+      navigator.clipboard.writeText(token);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  // AI Job test functions
+  const runAiJobSingle = async () => {
+    setAiJobLoading(true);
+    setAiJobResult(null);
     try {
-      // Test health endpoint with ngrok-skip-browser-warning header
-      const healthResponse = await fetch(`${config.pythonUrl}/health`, {
-        method: 'GET',
-        headers: {
-          'ngrok-skip-browser-warning': 'true',
-          'User-Agent': 'VoiceBackendTester/1.0'
-        },
-        mode: 'cors'
+      const res = await fetch(`${API_BASE}/api/admin/ai-batch/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ patientId: aiJobPatientId }),
       });
-      
-      addLog(`✅ Response received: ${healthResponse.status} ${healthResponse.statusText}`, 'success');
-      
-      // Check if response is actually JSON
-      const contentType = healthResponse.headers.get('content-type');
-      addLog(`📋 Content-Type: ${contentType}`, 'info');
-      
-      if (!contentType || !contentType.includes('application/json')) {
-        const textResponse = await healthResponse.text();
-        addLog(`📄 Response text (first 200 chars): ${textResponse.substring(0, 200)}`, 'info');
-        throw new Error(`Python service returned non-JSON response`);
-      }
-      
-      const healthData = await healthResponse.json();
-      
-      // Python service uses different response structure
-      const profileCount = healthData.profiles_loaded || 0;
-      const providerIds = healthData.provider_ids || [];
-      
-      updateTest('python', { 
-        status: 'success', 
-        result: { 
-          health: healthData, 
-          profileCount: profileCount,
-          providerIds: providerIds
-        }
-      });
-      addLog(`✅ Python service: ${healthData.status}`, 'success');
-      addLog(`✅ Loaded profiles: ${profileCount}`, 'success');
-      if (providerIds.length > 0) {
-        addLog(`✅ Provider IDs: ${providerIds.join(', ')}`, 'success');
-      }
-    } catch (error) {
-      updateTest('python', { status: 'error', result: error.message });
-      addLog(`❌ Python service error: ${error.message}`, 'error');
-      addLog(`❌ Error type: ${error.name}`, 'error');
-      addLog(`❌ Full error: ${JSON.stringify(error, Object.getOwnPropertyNames(error))}`, 'error');
-      addLog(`ℹ️  This might be a CORS or network issue`, 'info');
-      addLog(`ℹ️  curl works: ${config.pythonUrl}/health`, 'info');
+      const data = await res.json();
+      setAiJobResult(data);
+    } catch (err) {
+      setAiJobResult({ success: false, message: err.message });
+    } finally {
+      setAiJobLoading(false);
     }
-  }, []);
-
-  // Run all tests
-  const runAllTests = async () => {
-    addLog('🧪 Starting comprehensive test suite...', 'info');
-    await testHealthCheck();
-    await new Promise(r => setTimeout(r, 500));
-    connectMeetingWebSocket();
-    await new Promise(r => setTimeout(r, 1000));
-    await testPythonService();
   };
 
-  // Auto-refresh
-  useEffect(() => {
-    if (autoRefresh) {
-      const interval = setInterval(() => {
-        testHealthCheck();
-        testPythonService();
-      }, 10000);
-      return () => clearInterval(interval);
-    }
-  }, [autoRefresh, testHealthCheck, testPythonService]);
-
-  // Cleanup on unmount
-useEffect(() => {
-  return () => {
-    // Close meeting websocket
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-
-    // Close enrollment websocket
-    if (enrollWsRef.current) {
-      enrollWsRef.current.close();
-      enrollWsRef.current = null;
-    }
-
-    // Stop meeting audio (PCM AudioContext model)
-    if (meetingMediaRecorderRef.current) {
-      const { processor, source, audioContext } = meetingMediaRecorderRef.current;
-
-      if (processor) processor.disconnect();
-      if (source) source.disconnect();
-      if (audioContext) audioContext.close();
-
-      meetingMediaRecorderRef.current = null;
-    }
-
-    // Stop mic stream
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(t => t.stop());
-      mediaStreamRef.current = null;
+  const runAiJobAll = async () => {
+    setAiJobAllLoading(true);
+    setAiJobAllResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/ai-batch/test-all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      setAiJobAllResult(data);
+    } catch (err) {
+      setAiJobAllResult({ success: false, message: err.message });
+    } finally {
+      setAiJobAllLoading(false);
     }
   };
-}, []);
 
+  const isAuthenticated = !!token && !!tokenInfo;
 
   return (
-    <>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        
-        * {
-          margin: 0;
-          padding: 0;
-          box-sizing: border-box;
-        }
-        
-        body {
-          font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-          -webkit-font-smoothing: antialiased;
-          -moz-osx-font-smoothing: grayscale;
-        }
-        
-        .animate-spin {
-          animation: spin 1s linear infinite;
-        }
-        
-        .animate-pulse {
-          animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-        }
-        
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-        
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
-        }
-        
-        .scrollbar-hide::-webkit-scrollbar {
-          display: none;
-        }
-        
-        .scrollbar-hide {
-          -ms-overflow-style: none;
-          scrollbar-width: none;
-        }
-      `}</style>
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-6">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-4xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
-            Voice Recognition Backend Tester
-          </h1>
-          <p className="text-slate-400">Live testing with real-time audio streaming</p>
-        </div>
-
-        {/* Control Panel */}
-        <div className="bg-slate-800/50 backdrop-blur rounded-lg p-4 mb-6 border border-slate-700">
-          <div className="flex flex-wrap gap-3">
-            <button
-              onClick={runAllTests}
-              className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-500 rounded-lg hover:from-blue-600 hover:to-purple-600 transition flex items-center gap-2"
-            >
-              <Activity className="w-4 h-4" />
-              Run All Tests
-            </button>
-            <button
-              onClick={testHealthCheck}
-              className="px-4 py-2 bg-slate-700 rounded-lg hover:bg-slate-600 transition flex items-center gap-2"
-            >
-              <Activity className="w-4 h-4" />
-              Health
-            </button>
-            <button
-              onClick={testPythonService}
-              className="px-4 py-2 bg-slate-700 rounded-lg hover:bg-slate-600 transition flex items-center gap-2"
-            >
-              <Send className="w-4 h-4" />
-              Python
-            </button>
-            <label className="flex items-center gap-2 px-4 py-2 bg-slate-700 rounded-lg cursor-pointer hover:bg-slate-600 transition">
-              <input
-                type="checkbox"
-                checked={autoRefresh}
-                onChange={(e) => setAutoRefresh(e.target.checked)}
-                className="rounded"
-              />
-              Auto-refresh (10s)
-            </label>
-          </div>
-        </div>
-
-        {/* Meeting WebSocket Section */}
-        <div className="bg-gradient-to-r from-green-500/10 to-blue-500/10 backdrop-blur rounded-lg p-6 mb-6 border border-green-500/30">
-          <h3 className="font-semibold mb-4 flex items-center gap-2 text-xl">
-            <Radio className="w-6 h-6 text-green-400" />
-            Meeting WebSocket (Persistent Connection)
-          </h3>
-
-          <div className="space-y-4">
-            <div className="flex items-center gap-3">
-              <div className={`w-3 h-3 rounded-full ${isMeetingConnected ? 'bg-green-500 animate-pulse' : 'bg-slate-600'}`} />
-              <span className="text-sm text-slate-300">
-                {isMeetingConnected ? 'Connected - Streaming audio continuously' : 'Not connected'}
-              </span>
-              {isRecordingMeeting && (
-                <div className="flex items-center gap-2 text-red-400 animate-pulse">
-                  <Mic className="w-4 h-4" />
-                  <span className="text-xs">LIVE</span>
-                </div>
-              )}
-              {patientContextSent && (
-                <div className="flex items-center gap-2 text-cyan-400">
-                  <Users className="w-4 h-4" />
-                  <span className="text-xs">Patient: {patientId}</span>
-                </div>
-              )}
+    <div className="min-h-screen bg-gray-50">
+      {/* Top Bar */}
+      <header className="bg-white shadow-sm border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+              <Stethoscope className="w-5 h-5 text-white" />
             </div>
-
-            <div className="flex flex-wrap gap-3">
-              {!isMeetingConnected ? (
-                <button
-                  onClick={connectMeetingWebSocket}
-                  className="px-4 py-2 bg-green-600 rounded-lg hover:bg-green-700 transition flex items-center gap-2"
-                >
-                  <Radio className="w-4 h-4" />
-                  Connect Meeting
-                </button>
-              ) : (
-                <>
-                  <button
-                    onClick={disconnectMeetingWebSocket}
-                    className="px-4 py-2 bg-red-600 rounded-lg hover:bg-red-700 transition flex items-center gap-2"
-                  >
-                    <StopCircle className="w-4 h-4" />
-                    Disconnect
-                  </button>
-
-                  {!isRecordingMeeting ? (
-                    <button
-                      onClick={startMeetingRecording}
-                      className="px-4 py-2 bg-blue-600 rounded-lg hover:bg-blue-700 transition flex items-center gap-2"
-                    >
-                      <Mic className="w-4 h-4" />
-                      Start Recording
-                    </button>
-                  ) : (
-                    <button
-                      onClick={stopMeetingRecording}
-                      className="px-4 py-2 bg-red-600 rounded-lg hover:bg-red-700 transition flex items-center gap-2 animate-pulse"
-                    >
-                      <StopCircle className="w-4 h-4" />
-                      Stop Recording
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-
-            <div className="text-sm text-slate-400">
-              <TestStatus status={tests.meetingWs.status}>
-                Messages received: {tests.meetingWs.messages.length}
-              </TestStatus>
-            </div>
-          </div>
-        </div>
-
-        {/* RAG Testing Section */}
-        <div className="bg-gradient-to-r from-cyan-500/10 to-blue-500/10 backdrop-blur rounded-lg p-6 mb-6 border border-cyan-500/30">
-          <h3 className="font-semibold mb-4 flex items-center gap-2 text-xl">
-            <Users className="w-6 h-6 text-cyan-400" />
-            RAG Patient Context Testing
-          </h3>
-
-          <div className="space-y-4">
             <div>
-              <label className="block text-sm text-slate-300 mb-2">Patient ID:</label>
-              <div className="flex gap-3">
-                <input
-                  type="number"
-                  value={patientId}
-                  onChange={(e) => setPatientId(parseInt(e.target.value))}
-                  disabled={!isMeetingConnected}
-                  className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-cyan-500 disabled:opacity-50"
-                  min="1"
-                  placeholder="Enter patient ID (e.g., 3103)"
-                />
-                <button
-                  onClick={sendPatientContext}
-                  className="px-4 py-2 bg-cyan-600 rounded-lg hover:bg-cyan-700 transition flex items-center gap-2"
-                >
-                  <Send className="w-4 h-4" />
-                  Send Patient Context (HTTP)
-                </button>
-              </div>
-              <div className="text-xs text-slate-400 mt-1">
-                Uses HTTP POST to /api/meeting/patient (simpler than WebSocket)
-              </div>
+              <h1 className="text-lg font-bold text-gray-800">FOCUS UTC Tester</h1>
+              <p className="text-xs text-gray-500">Backend API & AI Chat Testing</p>
             </div>
+          </div>
 
-            {patientContextSent && (
-              <div className="text-sm text-cyan-400 flex items-center gap-2">
-                <CheckCircle className="w-4 h-4" />
-                Patient context sent. Now ask questions via voice:
-              </div>
-            )}
-
-            <div className="bg-slate-900 rounded-lg p-4 border border-slate-700">
-              <h4 className="text-sm font-semibold text-slate-300 mb-2">Test Questions to Ask via Voice:</h4>
-              <div className="text-xs text-slate-400 space-y-1">
-                <div>• "What imaging results do we have?"</div>
-                <div>• "What is the patient's diagnosis?"</div>
-                <div>• "What are the UTC admission criteria?"</div>
-                <div>• "What medications is the patient on?"</div>
-                <div>• "What are the health scores?"</div>
-              </div>
-            </div>
-
-            {aiResponses.length > 0 && (
-              <div className="bg-slate-900 rounded-lg p-4 border border-cyan-700">
-                <div className="flex justify-between items-center mb-3">
-                  <h4 className="text-sm font-semibold text-cyan-400">AI Responses ({aiResponses.length}):</h4>
+          <div className="flex items-center gap-3">
+            {isAuthenticated ? (
+              <>
+                <div className="text-right hidden sm:block">
+                  <div className="text-sm font-medium text-gray-700">{tokenInfo.name}</div>
+                  <div className="text-xs text-gray-400">{tokenInfo.upn}</div>
+                </div>
+                <div className="flex items-center gap-1">
                   <button
-                    onClick={() => setAiResponses([])}
-                    className="text-xs px-2 py-1 bg-slate-700 rounded hover:bg-slate-600 transition"
+                    onClick={copyToken}
+                    title="Copy JWT token"
+                    className="flex items-center gap-1 px-2 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded transition-colors"
                   >
-                    Clear
+                    {copied ? <CheckCircle className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copied ? 'Copied!' : 'JWT'}
+                  </button>
+                  <button
+                    onClick={handleLogout}
+                    className="flex items-center gap-1 px-3 py-1.5 text-xs bg-red-50 text-red-600 hover:bg-red-100 rounded transition-colors"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    Sign Out
                   </button>
                 </div>
-                <div className="space-y-2 max-h-64 overflow-y-auto">
-                  {aiResponses.map((response, idx) => (
-                    <div key={idx} className="bg-slate-800 rounded p-3 border border-slate-700">
-                      <div className="flex items-start gap-2">
-                        <div className="text-cyan-400 text-xs font-semibold mt-1">🤖</div>
-                        <div className="flex-1">
-                          <div className="text-xs text-slate-400 mb-1">
-                            {new Date(response.timestamp).toLocaleTimeString()}
-                          </div>
-                          <div className="text-sm text-slate-200">{response.text}</div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* TTS Test Section */}
-        <div className="bg-gradient-to-r from-yellow-500/10 to-orange-500/10 backdrop-blur rounded-lg p-6 mb-6 border border-yellow-500/30">
-          <h3 className="font-semibold mb-4 flex items-center gap-2 text-xl">
-            <Volume2 className="w-6 h-6 text-yellow-400" />
-            Text-to-Speech (via Meeting WebSocket)
-          </h3>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm text-slate-300 mb-2">Enter text to convert:</label>
-              <textarea
-                value={customTTSText}
-                onChange={(e) => setCustomTTSText(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-white resize-none focus:outline-none focus:border-yellow-500"
-                rows="3"
-                placeholder="Enter text to convert to speech..."
-              />
-            </div>
-            
-            <div className="flex flex-wrap gap-3">
-              <button
-                onClick={testTTSSummary}
-                disabled={tests.tts.status === 'running' || !isMeetingConnected}
-                className="px-4 py-2 bg-yellow-600 rounded-lg hover:bg-yellow-700 transition flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {tests.tts.status === 'running' ? (
-                  <>
-                    <Loader className="w-4 h-4 animate-spin" />
-                    Sending...
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-4 h-4" />
-                    Send TTS Request
-                  </>
-                )}
-              </button>
-            </div>
-            
-            {!isMeetingConnected && (
-              <div className="text-sm text-orange-400 flex items-center gap-2">
-                <Activity className="w-4 h-4" />
-                Connect Meeting WebSocket first to receive audio responses
-              </div>
-            )}
-            
-            <div className="text-sm text-slate-400">
-              <TestStatus status={tests.tts.status}>
-                {tests.tts.result?.message || 'Ready to send TTS request'}
-              </TestStatus>
-            </div>
-          </div>
-        </div>
-
-        {/* Enrollment Section */}
-        <div className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 backdrop-blur rounded-lg p-6 mb-6 border border-purple-500/30">
-          <h3 className="font-semibold mb-4 flex items-center gap-2 text-xl">
-            <Users className="w-6 h-6 text-purple-400" />
-            Voice Enrollment (Audio Streaming)
-          </h3>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm text-slate-300 mb-2">User Number:</label>
-              <input
-                type="number"
-                value={enrollmentUserNum}
-                onChange={(e) => setEnrollmentUserNum(parseInt(e.target.value))}
-                disabled={isEnrolling}
-                className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500 disabled:opacity-50"
-                min="1"
-              />
-            </div>
-            
-            <div className="flex flex-wrap gap-3">
-              {!isEnrolling ? (
-                <button
-                  onClick={startEnrollment}
-                  className="px-4 py-2 bg-purple-600 rounded-lg hover:bg-purple-700 transition flex items-center gap-2"
-                >
-                  <Mic className="w-4 h-4" />
-                  Start Enrollment
-                </button>
-              ) : (
-                <button
-                  onClick={stopEnrollment}
-                  className="px-4 py-2 bg-red-600 rounded-lg hover:bg-red-700 transition flex items-center gap-2 animate-pulse"
-                >
-                  <StopCircle className="w-4 h-4" />
-                  Stop Enrollment
-                </button>
-              )}
-            </div>
-            
-            {isRecordingEnroll && (
-              <div className="text-sm text-purple-400 flex items-center gap-2">
-                <Mic className="w-4 h-4 animate-pulse" />
-                Recording and streaming audio...
-              </div>
-            )}
-            
-            <div className="text-sm text-slate-400">
-              <TestStatus status={tests.enrollWs.status}>
-                Messages: {tests.enrollWs.messages.length}
-              </TestStatus>
-            </div>
-          </div>
-        </div>
-
-        {/* Test Results Grid */}
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-          {/* Health Check */}
-          <div className="bg-slate-800/50 backdrop-blur rounded-lg p-4 border border-slate-700">
-            <h3 className="font-semibold mb-3 flex items-center gap-2">
-              <Activity className="w-5 h-5 text-blue-400" />
-              Health Check
-            </h3>
-            <TestStatus status={tests.health.status}>
-              {tests.health.result ? JSON.stringify(tests.health.result) : 'Not tested'}
-            </TestStatus>
-          </div>
-
-          {/* Python Service */}
-          <div className="bg-slate-800/50 backdrop-blur rounded-lg p-4 border border-slate-700">
-            <h3 className="font-semibold mb-3 flex items-center gap-2">
-              <Send className="w-5 h-5 text-orange-400" />
-              Python Eagle Service
-            </h3>
-            <TestStatus status={tests.python.status}>
-              {tests.python.result?.health?.status || 'Not tested'}
-            </TestStatus>
-            {tests.python.result?.profileCount && (
-              <div className="mt-2 text-xs text-slate-400">
-                Profiles: {tests.python.result.profileCount}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Live Logs */}
-        <div className="bg-slate-800/50 backdrop-blur rounded-lg p-4 border border-slate-700">
-          <div className="flex justify-between items-center mb-3">
-            <h3 className="font-semibold flex items-center gap-2">
-              <MessageSquare className="w-5 h-5 text-cyan-400" />
-              Live Logs
-            </h3>
-            <button
-              onClick={() => setWsLogs([])}
-              className="text-xs px-3 py-1 bg-slate-700 rounded hover:bg-slate-600 transition"
-            >
-              Clear
-            </button>
-          </div>
-          <div ref={logsContainerRef}
- className="bg-slate-900 rounded p-3 h-64 overflow-y-auto font-mono text-xs space-y-1">
-            {wsLogs.length === 0 ? (
-              <div className="text-slate-500 text-center py-8">No logs yet. Run a test to see activity.</div>
+              </>
             ) : (
-              wsLogs.map((log, i) => (
-                <div key={i} className={`${
-                  log.type === 'error' ? 'text-red-400' :
-                  log.type === 'success' ? 'text-green-400' :
-                  log.type === 'ws' ? 'text-blue-400' :
-                  'text-slate-300'
-                }`}>
-                  <span className="text-slate-500">[{log.time}]</span> {log.message}
-                </div>
-              ))
+              <button
+                onClick={handleLogin}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                <LogIn className="w-4 h-4" />
+                Sign in with Microsoft
+              </button>
             )}
-
           </div>
         </div>
+      </header>
 
-        {/* Configuration */}
-        <div className="mt-6 bg-slate-800/50 backdrop-blur rounded-lg p-4 border border-slate-700">
-          <h3 className="font-semibold mb-3 text-sm text-slate-400">Configuration</h3>
-          <div className="grid md:grid-cols-3 gap-3 text-xs font-mono">
-            <div>
-              <div className="text-slate-500">Backend HTTP:</div>
-              <div className="text-slate-300 break-all">{config.backendUrl}</div>
-            </div>
-            <div>
-              <div className="text-slate-500">Backend WS:</div>
-              <div className="text-slate-300 break-all">{config.backendWs}</div>
-            </div>
-            <div>
-              <div className="text-slate-500">Python Service:</div>
-              <div className="text-slate-300 break-all">{config.pythonUrl}</div>
+      {/* Auth Error Banner */}
+      {authError && (
+        <div className="bg-red-50 border-b border-red-200">
+          <div className="max-w-7xl mx-auto px-4 py-2 flex items-center gap-3 text-xs">
+            <span className="text-red-700 font-medium">Auth Error:</span>
+            <span className="text-red-600">{authError}</span>
+            <button
+              onClick={() => setAuthError(null)}
+              className="ml-auto text-red-400 hover:text-red-600"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Token Info Banner */}
+      {isAuthenticated && (
+        <div className="bg-green-50 border-b border-green-200">
+          <div className="max-w-7xl mx-auto px-4 py-2 flex items-center gap-4 text-xs">
+            <Shield className="w-4 h-4 text-green-600" />
+            <span className="text-green-700 font-medium">Authenticated</span>
+            <span className="text-green-600">OID: {tokenInfo.oid?.substring(0, 8)}...</span>
+            <span className="text-green-600">Audience: {tokenInfo.aud?.substring(0, 20)}...</span>
+            <div className="flex items-center gap-1 text-green-600">
+              <Clock className="w-3 h-3" />
+              Expires: {tokenInfo.exp}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Tab Navigation */}
+      <div className="bg-white border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4">
+          <nav className="flex gap-1">
+            {TABS.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                  activeTab === tab.id
+                    ? `border-${tab.color}-600 text-${tab.color}-600`
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <tab.icon className="w-4 h-4" />
+                {tab.label}
+              </button>
+            ))}
+          </nav>
         </div>
       </div>
+
+      {/* Tab Content */}
+      <main className="max-w-7xl mx-auto px-4 py-6">
+        {activeTab === 'welcome' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              <ChatBox
+                token={token}
+                context="welcome"
+                title="Welcome - FOCUS AI Assistant"
+                placeholder="Ask about today's schedule, patients, or clinical data..."
+                suggestedQuestions={WELCOME_QUESTIONS}
+                enableVoice={true}
+              />
+            </div>
+            <div className="space-y-4">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                <h3 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4 text-blue-600" />
+                  Welcome Screen Context
+                </h3>
+                <p className="text-sm text-gray-600 mb-3">
+                  This chatbox simulates the provider's landing page after login. It can:
+                </p>
+                <ul className="text-sm text-gray-500 space-y-1.5">
+                  <li className="flex items-start gap-2">
+                    <span className="text-blue-400 mt-0.5">&#8226;</span>
+                    Show today's patient schedule across all units
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-blue-400 mt-0.5">&#8226;</span>
+                    Identify new intakes and non-English speakers
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-blue-400 mt-0.5">&#8226;</span>
+                    Flag unreviewed labs, UDS, and imaging
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-blue-400 mt-0.5">&#8226;</span>
+                    Surface at-risk patients (PHQ-9 scores)
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-blue-400 mt-0.5">&#8226;</span>
+                    Preview confirmed procedures for the day
+                  </li>
+                </ul>
+              </div>
+              <div className="bg-blue-50 rounded-xl border border-blue-200 p-4">
+                <h4 className="text-sm font-medium text-blue-800 mb-1">Data Source</h4>
+                <p className="text-xs text-blue-600">
+                  Uses synthetic placeholder data in <code>chat.repository.js</code>.
+                  8 sample patients, schedules, labs, UDS, PHQ-9, imaging, and care actions.
+                  Will switch to real DB when SPs are ready.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'inside_scrum' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              <ChatBox
+                token={token}
+                context="inside_scrum"
+                contextData={{
+                  patientId: selectedPatient.patientId,
+                  patientName: selectedPatient.patientName,
+                  unitId: 1,
+                }}
+                title="Inside Scrum - Patient AI Assistant"
+                placeholder={`Ask about ${selectedPatient.patientName}...`}
+                suggestedQuestions={INSIDE_SCRUM_QUESTIONS}
+              />
+            </div>
+            <div className="space-y-4">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                <h3 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                  <Stethoscope className="w-4 h-4 text-green-600" />
+                  Inside Scrum Context
+                </h3>
+                <p className="text-sm text-gray-600 mb-3">
+                  Active during scrum with a specific patient selected. Text-only — no voice chat (WebSocket is running for speaker identification).
+                </p>
+
+                {/* Patient Selector */}
+                <div className="mb-3">
+                  <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Select Patient</label>
+                  <select
+                    value={selectedPatient.patientId}
+                    onChange={(e) => {
+                      const p = SYNTHETIC_PATIENTS.find(sp => sp.id === Number(e.target.value));
+                      setSelectedPatient({
+                        patientId: Number(e.target.value),
+                        patientName: p?.name || '',
+                      });
+                    }}
+                    className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
+                  >
+                    {SYNTHETIC_PATIENTS.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} — {p.diagnosis.split(',')[0]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <ul className="text-sm text-gray-500 space-y-1.5">
+                  <li className="flex items-start gap-2">
+                    <span className="text-green-400 mt-0.5">&#8226;</span>
+                    Patient synopsis with diagnosis and GHS scores
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-green-400 mt-0.5">&#8226;</span>
+                    UDS, lab results, and PHQ-9 assessments
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-green-400 mt-0.5">&#8226;</span>
+                    Care action review and suggestions
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-green-400 mt-0.5">&#8226;</span>
+                    Imaging and report links
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-green-400 mt-0.5">&#8226;</span>
+                    Draft patient education content (marked DRAFT)
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'outside_scrum' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              <ChatBox
+                token={token}
+                context="outside_scrum"
+                contextData={{
+                  patientId: selectedPatient.patientId,
+                  patientName: selectedPatient.patientName,
+                  unitId: 1,
+                }}
+                title="Outside Scrum - Patient Voice Assistant"
+                placeholder={`Ask about ${selectedPatient.patientName}...`}
+                suggestedQuestions={OUTSIDE_SCRUM_QUESTIONS}
+                enableVoice={true}
+              />
+            </div>
+            <div className="space-y-4">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                <h3 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-purple-600" />
+                  Outside Scrum Context
+                </h3>
+                <p className="text-sm text-gray-600 mb-3">
+                  1-on-1 session with a patient outside the scrum. Voice chat enabled — WebSocket is free (no scrum running).
+                </p>
+
+                {/* Patient Selector */}
+                <div className="mb-3">
+                  <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Select Patient</label>
+                  <select
+                    value={selectedPatient.patientId}
+                    onChange={(e) => {
+                      const p = SYNTHETIC_PATIENTS.find(sp => sp.id === Number(e.target.value));
+                      setSelectedPatient({
+                        patientId: Number(e.target.value),
+                        patientName: p?.name || '',
+                      });
+                    }}
+                    className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500"
+                  >
+                    {SYNTHETIC_PATIENTS.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} — {p.diagnosis.split(',')[0]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <ul className="text-sm text-gray-500 space-y-1.5">
+                  <li className="flex items-start gap-2">
+                    <span className="text-purple-400 mt-0.5">&#8226;</span>
+                    Voice-enabled patient queries (mic button)
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-purple-400 mt-0.5">&#8226;</span>
+                    Patient synopsis, diagnosis, GHS scores
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-purple-400 mt-0.5">&#8226;</span>
+                    UDS, labs, PHQ-9 assessments
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-purple-400 mt-0.5">&#8226;</span>
+                    Imaging reports and findings
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <span className="text-purple-400 mt-0.5">&#8226;</span>
+                    AI reads responses aloud (TTS)
+                  </li>
+                </ul>
+              </div>
+              <div className="bg-purple-50 rounded-xl border border-purple-200 p-4">
+                <h4 className="text-sm font-medium text-purple-800 mb-1">Voice Chat</h4>
+                <p className="text-xs text-purple-600">
+                  Uses Azure STT (backend) and Azure TTS (Opus codec).
+                  Only the latest AI response audio plays — previous audio is stopped automatically.
+                  Inside Scrum has no voice since WebSocket is active for speaker identification.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'ai_job' && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Single Patient Test */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                <TestTube2 className="w-5 h-5 text-orange-600" />
+                AI Batch — Single Patient
+              </h3>
+              <p className="text-sm text-gray-500 mb-4">
+                Generate AI scrum content (presentation, encounter prep, last visit summary, trends, care action suggestions) for one synthetic patient.
+              </p>
+              <div className="mb-4">
+                <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Select Patient</label>
+                <select
+                  value={aiJobPatientId}
+                  onChange={(e) => setAiJobPatientId(Number(e.target.value))}
+                  className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-orange-500"
+                >
+                  {SYNTHETIC_PATIENTS.map(p => (
+                    <option key={p.id} value={p.id}>{p.name} (ID: {p.id}) — {p.diagnosis.split(',')[0]}</option>
+                  ))}
+                </select>
+              </div>
+              <button
+                onClick={runAiJobSingle}
+                disabled={aiJobLoading || !token}
+                className="w-full px-4 py-2.5 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+              >
+                {aiJobLoading ? <><Loader className="w-4 h-4 animate-spin" /> Generating...</> : 'Run AI Batch (Single)'}
+              </button>
+              {aiJobResult && (
+                <div className="mt-4">
+                  <div className={`text-xs font-medium mb-2 ${aiJobResult.success ? 'text-green-600' : 'text-red-600'}`}>
+                    {aiJobResult.success ? 'Success' : `Error: ${aiJobResult.message}`}
+                  </div>
+                  {aiJobResult.success && aiJobResult.data && (
+                    <pre className="text-xs bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-auto max-h-[400px] whitespace-pre-wrap">
+                      {JSON.stringify(aiJobResult.data, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* All Patients Test */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h3 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                <TestTube2 className="w-5 h-5 text-orange-600" />
+                AI Batch — All Patients
+              </h3>
+              <p className="text-sm text-gray-500 mb-4">
+                Generate AI scrum content for all synthetic patients (3001, 3002, 3003, 3005). Takes ~30 seconds.
+              </p>
+              <div className="mb-4 bg-orange-50 rounded-lg p-3 border border-orange-200">
+                <p className="text-xs text-orange-700">
+                  <strong>Patients:</strong> {SYNTHETIC_PATIENTS.filter(p => [3001,3002,3003,3005].includes(p.id)).map(p => p.name).join(', ')}
+                </p>
+              </div>
+              <button
+                onClick={runAiJobAll}
+                disabled={aiJobAllLoading || !token}
+                className="w-full px-4 py-2.5 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+              >
+                {aiJobAllLoading ? <><Loader className="w-4 h-4 animate-spin" /> Generating all...</> : 'Run AI Batch (All Patients)'}
+              </button>
+              {aiJobAllResult && (
+                <div className="mt-4">
+                  <div className={`text-xs font-medium mb-2 ${aiJobAllResult.success ? 'text-green-600' : 'text-red-600'}`}>
+                    {aiJobAllResult.success
+                      ? `Success — ${aiJobAllResult.summary?.succeeded || 0}/${aiJobAllResult.summary?.total || 0} patients`
+                      : `Error: ${aiJobAllResult.message}`}
+                  </div>
+                  {aiJobAllResult.success && (
+                    <pre className="text-xs bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-auto max-h-[400px] whitespace-pre-wrap">
+                      {JSON.stringify(aiJobAllResult.results || aiJobAllResult.data, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'voice_agent' && (
+          <VoiceAgentTester token={token} />
+        )}
+      </main>
     </div>
-    </>
   );
 }
