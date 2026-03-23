@@ -1,17 +1,19 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   LogIn, LogOut, MessageSquare, Stethoscope, Calendar, TestTube2,
-  User, Copy, CheckCircle, Shield, Clock, Mic, Loader
+  User, Copy, CheckCircle, Shield, Clock, Mic, Loader, Users
 } from 'lucide-react';
 import { OAUTH_CONFIG, API_BASE, TEST_DATA, WELCOME_QUESTIONS, INSIDE_SCRUM_QUESTIONS, OUTSIDE_SCRUM_QUESTIONS, SYNTHETIC_PATIENTS } from './config';
 import ChatBox from './components/ChatBox';
 import VoiceAgentTester from './components/VoiceAgentTester';
+import VoiceEnrollment from './components/VoiceEnrollment';
 
 const TABS = [
   { id: 'welcome', label: 'Welcome Chat', icon: MessageSquare, color: 'blue' },
   { id: 'inside_scrum', label: 'Inside Scrum', icon: Stethoscope, color: 'green' },
   { id: 'outside_scrum', label: 'Outside Scrum', icon: Calendar, color: 'purple' },
   { id: 'ai_job', label: 'AI Job Tester', icon: TestTube2, color: 'orange' },
+  { id: 'voice_enroll', label: 'Voice Enrollment', icon: Users, color: 'teal' },
   { id: 'voice_agent', label: 'Voice Agent', icon: Mic, color: 'red' },
 ];
 
@@ -598,6 +600,10 @@ export default function App() {
               )}
             </div>
           </div>
+        )}
+
+        {activeTab === 'voice_enroll' && (
+          <VoiceEnrollment token={token} />
         )}
 
         {activeTab === 'voice_agent' && (
