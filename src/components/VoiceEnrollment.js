@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { Users, Mic, StopCircle, X, Loader, CheckCircle, XCircle } from 'lucide-react';
+import { Users, Mic, StopCircle, X, Loader, CheckCircle, XCircle, Play } from 'lucide-react';
 import { VOICE_BACKEND } from '../config';
 
 const ENROLLMENT_USERS = [
@@ -34,43 +34,51 @@ export default function VoiceEnrollment({ token }) {
   const audioCtxRef = useRef(null);
   const processorRef = useRef(null);
   const streamRef = useRef(null);
+  const logsEndRef = useRef(null);
 
   const addLog = useCallback((msg, type = 'info') => {
     setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
+    // Auto-scroll to bottom
+    setTimeout(() => logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
   }, []);
 
   const startRecording = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const audioCtx = new AudioCtx({ sampleRate: 16000 });
       audioCtxRef.current = audioCtx;
+
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
 
       const source = audioCtx.createMediaStreamSource(stream);
       const processor = audioCtx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
-      source.connect(processor);
-      processor.connect(audioCtx.destination);
-
       processor.onaudioprocess = (e) => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-        const float32 = e.inputBuffer.getChannelData(0);
-        const pcm16 = new Int16Array(float32.length);
-        for (let i = 0; i < float32.length; i++) {
-          const s = Math.max(-1, Math.min(1, float32[i]));
-          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        const input = e.inputBuffer.getChannelData(0);
+        const pcm16 = new Int16Array(input.length);
+        for (let i = 0; i < input.length; i++) {
+          let s = Math.max(-1, Math.min(1, input[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
         }
         wsRef.current.send(pcm16.buffer);
       };
 
+      source.connect(processor);
+      processor.connect(audioCtx.destination);
+
       setIsRecording(true);
-      addLog('Recording audio...', 'success');
+      setLogs(prev => [...prev, { msg: 'Recording PCM audio for enrollment...', type: 'success', time: new Date().toLocaleTimeString() }]);
     } catch (err) {
-      addLog(`Mic error: ${err.message}`, 'error');
+      setLogs(prev => [...prev, { msg: `Mic error: ${err.message}`, type: 'error', time: new Date().toLocaleTimeString() }]);
     }
-  }, [addLog]);
+  }, []);
 
   const stopRecording = useCallback(() => {
     if (processorRef.current) {
@@ -88,8 +96,20 @@ export default function VoiceEnrollment({ token }) {
     setIsRecording(false);
   }, []);
 
-  const startEnrollment = useCallback(async (user) => {
+  // Just open the dialog — don't connect or record yet
+  const selectUser = (user) => {
     setSelectedUser(user);
+    setMessages([]);
+    setLogs([]);
+    setIsEnrolling(false);
+    setIsRecording(false);
+  };
+
+  // Connect WS + start recording when user clicks "Start Enrollment"
+  const startEnrollment = useCallback(async () => {
+    if (!selectedUser) return;
+    const user = selectedUser;
+
     setMessages([]);
     setLogs([]);
     setIsEnrolling(true);
@@ -100,55 +120,59 @@ export default function VoiceEnrollment({ token }) {
       ? `${wsConfig.backendWs}/enroll?token=${token}`
       : `${wsConfig.backendWs}/enroll`;
 
-    addLog(`Connecting for ${user.displayName}...`, 'info');
+    // Use functional setState so logs don't get lost
+    setLogs([{ msg: `Connecting for ${user.displayName}...`, type: 'info', time: new Date().toLocaleTimeString() }]);
+
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      addLog('Connected to /enroll', 'success');
-      ws.send(JSON.stringify({ type: 'start', personId: user.id }));
-      addLog(`Sent enrollment start (personId=${user.id})`, 'info');
+      setLogs(prev => [...prev, { msg: 'Connected to /enroll', type: 'success', time: new Date().toLocaleTimeString() }]);
+      ws.send(JSON.stringify({ type: 'start', userNum: user.id }));
+      setLogs(prev => [...prev, { msg: `Sent enrollment start (userNum=${user.id})`, type: 'info', time: new Date().toLocaleTimeString() }]);
       startRecording();
     };
 
     ws.onmessage = (event) => {
+      const now = new Date().toLocaleTimeString();
       try {
         const message = JSON.parse(event.data);
         setMessages(prev => [...prev, message]);
 
         if (message.type === 'enrollment_complete' || message.type === 'success') {
-          addLog('Enrollment complete!', 'success');
-          stopEnrollment();
+          setLogs(prev => [...prev, { msg: 'Enrollment complete!', type: 'success', time: now }]);
         } else if (message.type === 'error') {
-          addLog(`Error: ${message.message}`, 'error');
+          setLogs(prev => [...prev, { msg: `Error: ${message.message || JSON.stringify(message)}`, type: 'error', time: now }]);
         } else {
-          addLog(`${JSON.stringify(message)}`, 'ws');
+          setLogs(prev => [...prev, { msg: JSON.stringify(message), type: 'ws', time: now }]);
         }
       } catch {
-        addLog(`${event.data}`, 'ws');
+        setLogs(prev => [...prev, { msg: String(event.data).substring(0, 200), type: 'ws', time: now }]);
       }
+      setTimeout(() => logsEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
     };
 
     ws.onerror = () => {
-      addLog('WebSocket error', 'error');
-      stopEnrollment();
+      setLogs(prev => [...prev, { msg: 'WebSocket error', type: 'error', time: new Date().toLocaleTimeString() }]);
     };
 
-    ws.onclose = () => {
-      addLog('WebSocket closed', 'info');
+    ws.onclose = (e) => {
+      setLogs(prev => [...prev, { msg: `WebSocket closed (code: ${e.code})`, type: 'info', time: new Date().toLocaleTimeString() }]);
       setIsEnrolling(false);
+      stopRecording();
     };
-  }, [token, addLog, startRecording]);
+  }, [token, selectedUser, startRecording]);
 
   const stopEnrollment = useCallback(() => {
     stopRecording();
     if (wsRef.current) {
-      wsRef.current.send(JSON.stringify({ type: 'stop' }));
+      try { wsRef.current.send(JSON.stringify({ type: 'stop' })); } catch {}
       wsRef.current.close();
       wsRef.current = null;
     }
     setIsEnrolling(false);
-  }, [stopRecording]);
+    addLog('Stopped enrollment', 'info');
+  }, [stopRecording, addLog]);
 
   const closeDialog = () => {
     if (isEnrolling) stopEnrollment();
@@ -175,7 +199,7 @@ export default function VoiceEnrollment({ token }) {
           Voice Enrollment
         </h2>
         <p className="text-sm text-gray-500">
-          Click on a person to start voice profile enrollment. Speak for ~20 seconds to complete enrollment.
+          Click on a person to open enrollment, then press Start to begin recording.
         </p>
       </div>
 
@@ -184,8 +208,8 @@ export default function VoiceEnrollment({ token }) {
         {ENROLLMENT_USERS.map(user => (
           <button
             key={user.id}
-            onClick={() => startEnrollment(user)}
-            disabled={isEnrolling}
+            onClick={() => selectUser(user)}
+            disabled={!!selectedUser}
             className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 text-left hover:border-teal-400 hover:shadow-md transition-all disabled:opacity-50 disabled:cursor-not-allowed group"
           >
             <div className="flex items-center gap-3">
@@ -243,9 +267,18 @@ export default function VoiceEnrollment({ token }) {
                 </div>
               )}
 
-              {/* Action Button */}
+              {/* Action Buttons */}
               <div className="flex gap-2 mb-4">
-                {isEnrolling ? (
+                {!isEnrolling && logs.length === 0 && (
+                  <button
+                    onClick={startEnrollment}
+                    className="flex-1 px-4 py-2.5 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Play className="w-4 h-4" />
+                    Start Enrollment
+                  </button>
+                )}
+                {isEnrolling && (
                   <button
                     onClick={stopEnrollment}
                     className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2"
@@ -253,9 +286,10 @@ export default function VoiceEnrollment({ token }) {
                     <StopCircle className="w-4 h-4" />
                     Stop Enrollment
                   </button>
-                ) : (
+                )}
+                {!isEnrolling && logs.length > 0 && (
                   <button
-                    onClick={() => startEnrollment(selectedUser)}
+                    onClick={startEnrollment}
                     className="flex-1 px-4 py-2.5 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors flex items-center justify-center gap-2"
                   >
                     <Mic className="w-4 h-4" />
@@ -265,13 +299,13 @@ export default function VoiceEnrollment({ token }) {
               </div>
 
               {/* Messages Log */}
-              <div className="bg-gray-50 rounded-lg border border-gray-200 max-h-52 overflow-y-auto">
+              <div className="bg-gray-50 rounded-lg border border-gray-200 max-h-72 overflow-y-auto">
                 <div className="px-3 py-2 border-b border-gray-200 bg-gray-100 sticky top-0">
                   <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Response Log</span>
                 </div>
                 <div className="p-2 space-y-1">
                   {logs.length === 0 && (
-                    <p className="text-xs text-gray-400 text-center py-3">Click a user to begin enrollment</p>
+                    <p className="text-xs text-gray-400 text-center py-3">Press "Start Enrollment" to begin</p>
                   )}
                   {logs.map((log, i) => (
                     <div key={i} className="flex items-start gap-2 text-xs">
@@ -279,7 +313,7 @@ export default function VoiceEnrollment({ token }) {
                       <span className={
                         log.type === 'error' ? 'text-red-600' :
                         log.type === 'success' ? 'text-green-600' :
-                        log.type === 'ws' ? 'text-blue-600 font-mono' :
+                        log.type === 'ws' ? 'text-blue-600 font-mono break-all' :
                         'text-gray-600'
                       }>
                         {log.type === 'success' && <CheckCircle className="w-3 h-3 inline mr-1" />}
@@ -289,6 +323,7 @@ export default function VoiceEnrollment({ token }) {
                       </span>
                     </div>
                   ))}
+                  <div ref={logsEndRef} />
                 </div>
               </div>
             </div>
