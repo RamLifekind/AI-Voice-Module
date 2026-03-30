@@ -9,6 +9,28 @@ const config = {
   pythonUrl: 'https://ai-python-backend-cqdpf4f7a7h0d3en.westus2-01.azurewebsites.net'
 };
 
+// Fetch a single-use ticket for voice backend WebSocket auth
+async function getVoiceWsTicket(token) {
+  console.log('[VoiceWS] Fetching ticket from:', `${VOICE_BACKEND}/api/ws/ticket`);
+  const res = await fetch(`${VOICE_BACKEND}/api/ws/ticket`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  console.log('[VoiceWS] Ticket response status:', res.status);
+  const text = await res.text();
+  console.log('[VoiceWS] Ticket response body:', text);
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Ticket endpoint returned non-JSON (${res.status}): ${text.substring(0, 200)}`);
+  }
+  if (!data.ticket) {
+    throw new Error(data.message || `Ticket failed (${res.status}): ${text.substring(0, 200)}`);
+  }
+  return data.ticket;
+}
+
 const TestStatus = ({ status, children }) => {
   const icons = {
     idle: <Activity className="w-4 h-4 text-gray-400" />,
@@ -135,8 +157,8 @@ export default function VoiceAgentTester({ token }) {
     }
   }, []);
 
-  // Test 2: Meeting WebSocket - Persistent connection
-  const connectMeetingWebSocket = () => {
+  // Test 2: Meeting WebSocket - Persistent connection (ticket-based auth)
+  const connectMeetingWebSocket = async () => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       addLog('⚠️ Meeting WebSocket already connected', 'info');
       return;
@@ -149,15 +171,27 @@ export default function VoiceAgentTester({ token }) {
       wsRef.current.close();
     }
     
-    const wsUrl = token ? `${config.backendWs}/meeting?token=${token}` : `${config.backendWs}/meeting`;
+    let wsUrl;
+    try {
+      if (token) {
+        const ticket = await getVoiceWsTicket(token);
+        wsUrl = `${config.backendWs}/meeting?ticket=${ticket}`;
+      } else {
+        wsUrl = `${config.backendWs}/meeting`;
+      }
+    } catch (err) {
+      updateTest('meetingWs', { status: 'error', result: err.message });
+      addLog(`❌ Failed to get WS ticket: ${err.message}`, 'error');
+      return;
+    }
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
-    
+
     ws.onopen = () => {
       updateTest('meetingWs', { status: 'success', result: 'Connected' });
       setIsMeetingConnected(true);
       setPatientContextSent(false);
-      addLog('✅ Connected to /meeting - Ready to receive messages', 'success');
+      addLog('✅ Connected to /meeting via ticket - Ready to receive messages', 'success');
 
       // Auto-start recording after connection established
       setTimeout(() => {
@@ -360,14 +394,26 @@ export default function VoiceAgentTester({ token }) {
       enrollWsRef.current.close();
     }
     
-    const wsUrl = token ? `${config.backendWs}/enroll?token=${token}` : `${config.backendWs}/enroll`;
-    const ws = new WebSocket(wsUrl);
+    let enrollWsUrl;
+    try {
+      if (token) {
+        const ticket = await getVoiceWsTicket(token);
+        enrollWsUrl = `${config.backendWs}/enroll?ticket=${ticket}`;
+      } else {
+        enrollWsUrl = `${config.backendWs}/enroll`;
+      }
+    } catch (err) {
+      updateTest('enrollWs', { status: 'error', result: err.message });
+      addLog(`❌ Failed to get WS ticket: ${err.message}`, 'error');
+      return;
+    }
+    const ws = new WebSocket(enrollWsUrl);
     enrollWsRef.current = ws;
-    
+
     ws.onopen = () => {
       updateTest('enrollWs', { status: 'success', result: 'Connected' });
       setIsEnrolling(true);
-      addLog('✅ Connected to /enroll', 'success');
+      addLog('✅ Connected to /enroll via ticket', 'success');
       
       // Send enrollment start
       ws.send(JSON.stringify({ 

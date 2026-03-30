@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { Send, Loader, Bot, User, AlertCircle, Mic, MicOff, Volume2, VolumeX, Radio } from 'lucide-react';
 import { CHAT_ENDPOINT, API_BASE } from '../config';
 
@@ -55,7 +55,7 @@ function playAudioBase64(base64Data, format = 'ogg-opus', onEnd) {
  *  - suggestedQuestions: array of quick-ask buttons
  *  - enableVoice: boolean — mic button, WebSocket STT/TTS through backend
  */
-export default function ChatBox({ token, context, contextData = {}, title, placeholder, suggestedQuestions = [], enableVoice = false }) {
+const ChatBox = forwardRef(function ChatBox({ token, context, contextData = {}, title, placeholder, suggestedQuestions = [], enableVoice = false }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -95,14 +95,46 @@ export default function ChatBox({ token, context, contextData = {}, title, place
     }
   }, [context, contextData]);
 
-  // ---- WebSocket connection ----
-  const _connectWs = useCallback(() => {
-    return new Promise((resolve, reject) => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        return resolve();
-      }
+  // ---- Fetch a single-use ticket for WebSocket auth ----
+  const _getWsTicket = async () => {
+    console.log('[ChatBox] Fetching WS ticket from:', `${API_BASE}/api/auth/ws-ticket`);
+    const res = await fetch(`${API_BASE}/api/auth/ws-ticket`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    console.log('[ChatBox] Ticket response status:', res.status);
+    const text = await res.text();
+    console.log('[ChatBox] Ticket response body:', text);
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(`Ticket endpoint returned non-JSON (${res.status}): ${text.substring(0, 200)}`);
+    }
+    if (!data.success || !data.ticket) {
+      throw new Error(data.message || `Ticket failed (${res.status}): ${text.substring(0, 200)}`);
+    }
+    return data.ticket;
+  };
 
-      const ws = new WebSocket(`${WS_BASE}/ws/chat?token=${token}`);
+  // ---- WebSocket connection ----
+  const _connectWs = useCallback(async () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    // Get single-use ticket first
+    let ticket;
+    try {
+      ticket = await _getWsTicket();
+    } catch (err) {
+      console.error('[ChatBox] Failed to get WS ticket:', err);
+      setError('Failed to authenticate WebSocket');
+      throw err;
+    }
+
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(`${WS_BASE}/ws/chat?ticket=${ticket}`);
 
       ws.onopen = () => {
         console.log('[ChatBox] WS connected');
@@ -326,6 +358,7 @@ export default function ChatBox({ token, context, contextData = {}, title, place
         body: JSON.stringify({
           message: contextPrefix + msgText.trim(),
           conversationHistory,
+          locationId: contextData.locationId || null,
         }),
       });
 
@@ -360,6 +393,11 @@ export default function ChatBox({ token, context, contextData = {}, title, place
       inputRef.current?.focus();
     }
   }, [input, loading, messages, context, contextData, token]);
+
+  // Expose sendMessage to parent via ref
+  useImperativeHandle(ref, () => ({
+    sendMessage: (text) => sendMessage(text),
+  }), [sendMessage]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -500,31 +538,6 @@ export default function ChatBox({ token, context, contextData = {}, title, place
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Suggested Questions */}
-      {messages.length === 0 && suggestedQuestions.length > 0 && (
-        <div className="px-4 pb-2 space-y-1.5 max-h-[250px] overflow-y-auto">
-          {suggestedQuestions.map((item, i) => {
-            const isObj = typeof item === 'object' && item.q;
-            const questionText = isObj ? item.q : item;
-            return (
-              <button
-                key={i}
-                onClick={() => sendMessage(questionText)}
-                className="w-full text-left text-xs bg-blue-50 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-100 transition-colors border border-blue-200 group"
-              >
-                <span className="font-medium">{questionText}</span>
-                {isObj && item.fn && (
-                  <span className="block text-[10px] text-gray-500 mt-0.5 group-hover:text-gray-700">
-                    fn: <span className="font-mono">{item.fn}</span>
-                    {item.expect && <> &middot; expect: {item.expect}</>}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
       {/* Input Area */}
       <div className="border-t border-gray-200 p-3">
         {/* Listening indicator */}
@@ -586,4 +599,6 @@ export default function ChatBox({ token, context, contextData = {}, title, place
       </div>
     </div>
   );
-}
+});
+
+export default ChatBox;

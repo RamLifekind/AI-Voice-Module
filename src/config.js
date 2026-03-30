@@ -18,7 +18,7 @@ export const VOICE_BACKEND = 'https://ai-speech-demo-hhhma9dyakhzh0e6.westus2-01
 
 // Sample test data GUIDs (from tested endpoints)
 export const TEST_DATA = {
-  locationId: '15380B7E-379C-4E0A-805A-576EBC7929F8',
+  locationId: '543F323C-97C9-4419-88D6-0E1E832CDC7E',
   unitId: 'A49AD52B-4E9E-4C4F-912C-3DC0D5ECC60F',
   patientId: '0025B8D7-8257-4967-B9F4-11B5D541D75C',
   patientId2: '4A4F88CC-746A-42B1-A827-00F32F92CB3A',
@@ -28,81 +28,85 @@ export const TEST_DATA = {
 };
 
 // ============================================================
-// SYNTHETIC PATIENTS (matches chat.repository.js placeholders)
+// REAL PATIENTS — loaded from DB via api.sGetPatientsToday
+// These are populated at runtime. Use TEST_DATA GUIDs for defaults.
 // ============================================================
-export const SYNTHETIC_PATIENTS = [
-  { id: 3001, name: 'Gilian Negata',  diagnosis: 'Chronic lower back pain, lumbar radiculopathy' },
-  { id: 3002, name: 'Maria Santos',   diagnosis: 'Fibromyalgia, anxiety disorder' },
-  { id: 3003, name: 'James Wilson',   diagnosis: 'Cervical stenosis, hypertension' },
-  { id: 3004, name: 'Anh Nguyen',     diagnosis: 'Knee osteoarthritis, substance use disorder' },
-  { id: 3005, name: 'Robert Chen',    diagnosis: 'Scoliosis, depression' },
-  { id: 3006, name: 'Lisa Thompson',  diagnosis: 'Sciatica, insomnia' },
-  { id: 3007, name: 'Carlos Ramirez', diagnosis: 'Chronic pain syndrome, PTSD' },
-  { id: 3008, name: 'Sarah Johnson',  diagnosis: 'Thoracic outlet syndrome' },
+export const DEFAULT_PATIENTS = [
+  { id: TEST_DATA.patientId,  name: 'Patient 1 (from DB)', label: 'Default Patient' },
+  { id: TEST_DATA.patientId2, name: 'Patient 2 (from DB)', label: 'Second Patient' },
 ];
 
 // ============================================================
-// SUGGESTED QUESTIONS — mapped to actual synthetic data
-// Each question targets a specific function in chat-tools
+// SUGGESTED QUESTIONS — each targets a specific SP via function calling
+// All connected to real DB data (no synthetic placeholders)
 // ============================================================
 
 // Welcome screen — schedule overview, cross-patient queries
 export const WELCOME_QUESTIONS = [
-  // get_daily_schedule
-  { q: "Who's on the schedule today?", fn: 'get_daily_schedule', expect: '8 patients across 2 units' },
-  { q: "Show me Unit 1 patients for today", fn: 'get_daily_schedule(unit_id=1)', expect: 'Gilian, Maria, James, Anh' },
-  { q: "Show me Unit 2 patients for today", fn: 'get_daily_schedule(unit_id=2)', expect: 'Robert, Lisa, Carlos, Sarah' },
-  // get_patients_by_filter
-  { q: "How many new intakes today?", fn: 'get_patients_by_filter(new_intake)', expect: 'Maria Santos, Anh Nguyen, Carlos Ramirez' },
-  { q: "Any non-English speaking patients today?", fn: 'get_patients_by_filter(language)', expect: 'Maria (Spanish), Anh (Vietnamese), Carlos (Spanish)' },
-  { q: "Which patients are at risk based on PHQ-9?", fn: 'get_patients_by_filter(risk_phq9)', expect: 'Maria (15), Robert (22), Carlos (12)' },
-  // get_unreviewed_items
-  { q: "Any unreviewed labs or imaging?", fn: 'get_unreviewed_items(all)', expect: 'HbA1c for Gilian, Lipid for James, X-Ray for Gilian, MRI for James' },
-  { q: "Show unreviewed imaging only", fn: 'get_unreviewed_items(imaging)', expect: 'X-Ray Lower Back (Gilian), CT Scan (Gilian), MRI Cervical (James)' },
-  { q: "Any unreviewed lab results?", fn: 'get_unreviewed_items(labs)', expect: 'HbA1c 6.8% for Gilian, Lipid Panel for James' },
-  // get_procedures_today
-  { q: "What procedures are planned for today?", fn: 'get_procedures_today', expect: '5 procedures: CMT, Exercise, Visit, Psychotherapy, Acupuncture' },
-  // search_patient
-  { q: "Find patient Gilian", fn: 'search_patient', expect: 'Gilian Negata, ID 3001' },
-  { q: "Search for patient Santos", fn: 'search_patient', expect: 'Maria Santos, ID 3002' },
+  // get_daily_schedule → api.sGetPatientsToday
+  { q: "Who's on the schedule today?", fn: 'get_daily_schedule', expect: 'Real patients from api.sGetPatientsToday' },
+  { q: "Show me today's patient schedule", fn: 'get_daily_schedule', expect: 'Patient list with appointment times, types, units' },
+  // get_patients_by_filter → api.sGetPatientsByFilter(@FilterType)
+  { q: "How many new intakes today?", fn: 'get_patients_by_filter(new_intake)', expect: 'Patients with FilterType=new_intake' },
+  { q: "Any non-English speaking patients?", fn: 'get_patients_by_filter(language)', expect: 'Patients with FilterType=language' },
+  { q: "Which patients are at risk based on PHQ-9?", fn: 'get_patients_by_filter(risk_phq9)', expect: 'Patients with FilterType=risk_phq9' },
+  { q: "Show active patients", fn: 'get_patients_by_filter(status, active)', expect: 'Patients with FilterType=status, FilterValue=active' },
+  // get_unreviewed_items → api.sGetUnreviewedItems
+  { q: "Any unreviewed labs or imaging?", fn: 'get_unreviewed_items(all)', expect: 'Unreviewed labs and imaging from DB' },
+  { q: "Show unreviewed imaging only", fn: 'get_unreviewed_items(imaging)', expect: 'Unreviewed imaging results' },
+  { q: "Any unreviewed lab results?", fn: 'get_unreviewed_items(labs)', expect: 'Unreviewed lab results' },
+  // get_procedures_today → api.sGetProceduresToday
+  { q: "What procedures are planned for today?", fn: 'get_procedures_today', expect: 'Confirmed procedures from DB' },
+  // search_patient → api.sSearchPatients
+  { q: "Find a patient by name (type any name)", fn: 'search_patient', expect: 'Patient search results from api.sSearchPatients' },
 ];
 
 // Inside scrum — single patient deep dive (uses selected patient from dropdown)
 export const INSIDE_SCRUM_QUESTIONS = [
-  { q: "Give me a 30-second synopsis of this patient", fn: 'get_patient_detail', expect: 'Patient overview with diagnosis and GHS' },
-  { q: "What is the diagnosis?", fn: 'get_patient_detail', expect: 'Patient diagnosis' },
-  { q: "What are the current care actions?", fn: 'get_patient_detail', expect: 'Care actions list' },
-  { q: "Global Health Score breakdown", fn: 'get_patient_detail', expect: 'GHS scores' },
-  { q: "Show UDS results", fn: 'get_patient_uds', expect: 'UDS results for selected patient' },
-  { q: "Show lab results", fn: 'get_patient_labs', expect: 'Lab results for selected patient' },
-  { q: "What is the PHQ-9 score?", fn: 'get_patient_phq9', expect: 'PHQ-9 score' },
-  { q: "Show imaging reports", fn: 'get_patient_reports', expect: 'Imaging reports' },
-  { q: "What does the latest MRI show?", fn: 'get_patient_reports', expect: 'MRI findings' },
+  // get_patient_detail → api.sGetPatientOverview
+  { q: "Give me a 30-second synopsis of this patient", fn: 'get_patient_detail', expect: 'Patient overview from api.sGetPatientOverview' },
+  { q: "What is the diagnosis?", fn: 'get_patient_detail', expect: 'Diagnosis from patient overview' },
+  { q: "What are the current care actions?", fn: 'get_patient_detail', expect: 'Care actions from patient overview' },
+  { q: "Global Health Score breakdown", fn: 'get_patient_detail', expect: 'GHS scores (body/mind/motivation/response/interactivity/social/substance)' },
+  // get_patient_uds → api.sGetPatientUDS
+  { q: "Show UDS results", fn: 'get_patient_uds', expect: 'UDS results from api.sGetPatientUDS' },
+  // get_patient_labs → api.sGetPatientLabs
+  { q: "Show lab results", fn: 'get_patient_labs', expect: 'Lab results from api.sGetPatientLabs' },
+  // get_patient_phq9 → api.sGetPatientPHQ9
+  { q: "What is the PHQ-9 score?", fn: 'get_patient_phq9', expect: 'PHQ-9 score from api.sGetPatientPHQ9' },
+  // get_patient_reports → api.sGetPatientDocuments
+  { q: "Show imaging reports", fn: 'get_patient_reports', expect: 'Reports from api.sGetPatientDocuments' },
+  { q: "What does the latest MRI show?", fn: 'get_patient_reports', expect: 'MRI details from api.sGetPatientDocuments' },
+  // suggest_care_actions → api.sGetPatientOverview + api.sGetServiceCatalog + AI
+  { q: "Suggest care actions for this patient", fn: 'suggest_care_actions', expect: 'AI-generated suggestions from service catalog' },
+  // Draft content — no SP (AI-generated, labeled DRAFT)
   { q: "Draft a patient education note about exercises", fn: 'none (DRAFT)', expect: 'AI-generated DRAFT content' },
 ];
 
 // Outside scrum — single patient context (same as inside scrum, but with voice chat)
 // Provider is with a patient outside the scrum meeting (1-on-1 session)
 export const OUTSIDE_SCRUM_QUESTIONS = [
-  // get_patient_detail
-  { q: "Give me a synopsis of this patient", fn: 'get_patient_detail', expect: 'Depends on selected patient' },
-  { q: "What is the diagnosis?", fn: 'get_patient_detail', expect: 'Patient diagnosis from synthetic data' },
-  { q: "What are the current care actions?", fn: 'get_patient_detail', expect: 'Care actions list from patient data' },
-  { q: "Global Health Score breakdown", fn: 'get_patient_detail', expect: 'GHS scores for selected patient' },
-  // get_patient_uds
-  { q: "Show UDS results", fn: 'get_patient_uds', expect: 'UDS results for selected patient' },
-  // get_patient_labs
-  { q: "Show lab results", fn: 'get_patient_labs', expect: 'Lab results for selected patient' },
-  // get_patient_phq9
-  { q: "What is the PHQ-9 score?", fn: 'get_patient_phq9', expect: 'PHQ-9 score for selected patient' },
-  // get_patient_reports
-  { q: "Show imaging reports", fn: 'get_patient_reports', expect: 'Imaging reports for selected patient' },
-  { q: "What does the latest MRI show?", fn: 'get_patient_reports', expect: 'MRI findings for selected patient' },
-  // Draft content
+  // get_patient_detail → api.sGetPatientOverview
+  { q: "Give me a synopsis of this patient", fn: 'get_patient_detail', expect: 'Patient overview from api.sGetPatientOverview' },
+  { q: "What is the diagnosis?", fn: 'get_patient_detail', expect: 'Diagnosis from patient overview' },
+  { q: "What are the current care actions?", fn: 'get_patient_detail', expect: 'Care actions from patient overview' },
+  { q: "Global Health Score breakdown", fn: 'get_patient_detail', expect: 'GHS scores from patient overview' },
+  // get_patient_uds → api.sGetPatientUDS
+  { q: "Show UDS results", fn: 'get_patient_uds', expect: 'UDS from api.sGetPatientUDS' },
+  // get_patient_labs → api.sGetPatientLabs
+  { q: "Show lab results", fn: 'get_patient_labs', expect: 'Labs from api.sGetPatientLabs' },
+  // get_patient_phq9 → api.sGetPatientPHQ9
+  { q: "What is the PHQ-9 score?", fn: 'get_patient_phq9', expect: 'PHQ-9 from api.sGetPatientPHQ9' },
+  // get_patient_reports → api.sGetPatientDocuments
+  { q: "Show imaging reports", fn: 'get_patient_reports', expect: 'Reports from api.sGetPatientDocuments' },
+  { q: "What does the latest MRI show?", fn: 'get_patient_reports', expect: 'MRI from api.sGetPatientDocuments' },
+  // suggest_care_actions → AI + service catalog
+  { q: "Suggest care actions for this patient", fn: 'suggest_care_actions', expect: 'AI suggestions from service catalog' },
+  // Draft content — no SP
   { q: "Draft a patient education note about exercises", fn: 'none (DRAFT)', expect: 'AI-generated DRAFT content' },
 ];
 
-// All 19 API endpoints + chat endpoint (#20)
+// All API endpoints (real DB-connected SPs)
 export const ENDPOINTS = [
   {
     id: 1,
@@ -267,26 +271,118 @@ export const ENDPOINTS = [
     method: 'POST',
     name: 'AI Chat',
     path: '/api/chat',
-    description: 'Send a message to FOCUS AI chatbot. Uses function calling with synthetic data.',
+    description: 'Send a message to FOCUS AI chatbot. Uses function calling with real DB data.',
     url: () => `${API_BASE}/api/chat`,
-    body: { message: "Who's on the schedule today?", conversationHistory: [] },
+    body: { message: "Who's on the schedule today?", conversationHistory: [], locationId: TEST_DATA.locationId },
   },
   {
     id: 21,
     method: 'POST',
     name: 'AI Batch Test (Single Patient)',
     path: '/api/admin/ai-batch/test',
-    description: 'Generate AI scrum content for a single synthetic patient. Returns: presentation, encounter prep, last visit summary, trends, care action suggestions.',
+    description: 'Generate AI scrum content for a single patient.',
     url: () => `${API_BASE}/api/admin/ai-batch/test`,
-    body: { patientId: 3001 },
+    body: { patientId: TEST_DATA.patientId },
   },
   {
     id: 22,
     method: 'POST',
     name: 'AI Batch Test (All Patients)',
     path: '/api/admin/ai-batch/test-all',
-    description: 'Generate AI scrum content for ALL synthetic patients (3001, 3002, 3003, 3005). Takes ~30s.',
+    description: 'Generate AI scrum content for all patients at location.',
     url: () => `${API_BASE}/api/admin/ai-batch/test-all`,
+  },
+  // ── New endpoints (not previously tested) ──────────────────
+  {
+    id: 23,
+    method: 'GET',
+    name: 'Get Scrum Agenda',
+    path: '/api/units/:unitId/scrum/agenda',
+    description: 'Get scrum agenda for pre-scrum screen. SP: api.sGetScrumAgenda.',
+    url: () => `${API_BASE}/api/units/${TEST_DATA.unitId}/scrum/agenda`,
+  },
+  {
+    id: 24,
+    method: 'GET',
+    name: 'Get Scrum Session Status',
+    path: '/api/units/scrum/sessions/:scrumSessionId',
+    description: 'Get scrum session status. Need a real scrumSessionId from initiate scrum (#4).',
+    url: () => `${API_BASE}/api/units/scrum/sessions/REPLACE_WITH_SCRUM_SESSION_ID`,
+  },
+  {
+    id: 25,
+    method: 'GET',
+    name: 'Get Scrum Attendance',
+    path: '/api/units/:unitId/scrum/:scrumSessionId/attendance',
+    description: 'Get attendance list for a scrum session. SP: api.sGetScrumAttendance.',
+    url: () => `${API_BASE}/api/units/${TEST_DATA.unitId}/scrum/REPLACE_WITH_SCRUM_SESSION_ID/attendance`,
+  },
+  {
+    id: 26,
+    method: 'GET',
+    name: 'Get Current Scrum Patient',
+    path: '/api/units/:unitId/scrum/:scrumSessionId/current-patient',
+    description: 'Get next undiscussed patient with full overview. SP: api.sGetCurrentScrumPatient.',
+    url: () => `${API_BASE}/api/units/${TEST_DATA.unitId}/scrum/REPLACE_WITH_SCRUM_SESSION_ID/current-patient`,
+  },
+  {
+    id: 27,
+    method: 'PUT',
+    name: 'Complete Scrum Session',
+    path: '/api/units/:unitId/scrum/:scrumSessionId/complete',
+    description: 'Complete an entire scrum session. SP: api.sCompleteScrumSession. Idempotent.',
+    url: () => `${API_BASE}/api/units/${TEST_DATA.unitId}/scrum/REPLACE_WITH_SCRUM_SESSION_ID/complete`,
+  },
+  {
+    id: 28,
+    method: 'GET',
+    name: 'Get Patient Overview',
+    path: '/api/units/:unitId/patients/:patientId/overview',
+    description: 'Get full patient overview for scrum. SP: api.sGetPatientOverview.',
+    url: () => `${API_BASE}/api/units/${TEST_DATA.unitId}/patients/${TEST_DATA.patientId}/overview`,
+  },
+  {
+    id: 29,
+    method: 'PATCH',
+    name: 'Patch GHS Scores',
+    path: '/api/units/:unitId/patients/:patientId/ghs',
+    description: 'Batch update patient GHS scores. SP: api.sPatchPatientGhsBatch.',
+    url: () => `${API_BASE}/api/units/${TEST_DATA.unitId}/patients/${TEST_DATA.patientId}/ghs`,
+    body: { scrumSessionId: 'REPLACE_WITH_SCRUM_SESSION_ID', updates: [{ domain: 'body', score: 2 }] },
+  },
+  {
+    id: 30,
+    method: 'GET',
+    name: 'Get Patients Today',
+    path: '/api/units/today?date=YYYY-MM-DD',
+    description: 'Get patients/units for today. SP: api.sGetPatientsToday.',
+    url: () => `${API_BASE}/api/units/today?date=${new Date().toISOString().split('T')[0]}&locationId=${TEST_DATA.locationId}`,
+  },
+  {
+    id: 31,
+    method: 'POST',
+    name: 'Reset Scrum UAT',
+    path: '/api/units/reset-uat',
+    description: 'Reset scrum state for UAT testing. SP: api.sResetScrumUAT.',
+    url: () => `${API_BASE}/api/units/reset-uat`,
+    body: { locationId: TEST_DATA.locationId },
+  },
+  {
+    id: 32,
+    method: 'POST',
+    name: 'Get WS Ticket',
+    path: '/api/auth/ws-ticket',
+    description: 'Issue single-use ticket for WebSocket auth. Returns opaque ticket (30s TTL).',
+    url: () => `${API_BASE}/api/auth/ws-ticket`,
+  },
+  {
+    id: 33,
+    method: 'PUT',
+    name: 'Approve Care Actions (Bulk)',
+    path: '/api/units/:unitId/patients/:patientId/care-actions/approve',
+    description: 'Bulk approve care actions. SP: api.sApprovePatientCareAction.',
+    url: () => `${API_BASE}/api/units/${TEST_DATA.unitId}/patients/${TEST_DATA.patientId}/care-actions/approve`,
+    body: { scrumSessionId: 'REPLACE_WITH_SCRUM_SESSION_ID', actions: [{ actionId: TEST_DATA.actionId, providerUserId: TEST_DATA.providerUserId, roleId: 'medical' }] },
   },
 ];
 

@@ -1,12 +1,13 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   LogIn, LogOut, MessageSquare, Stethoscope, Calendar, TestTube2,
-  User, Copy, CheckCircle, Shield, Clock, Mic, Loader, Users
+  User, Copy, CheckCircle, Shield, Clock, Mic, Loader, Users, Wifi
 } from 'lucide-react';
-import { OAUTH_CONFIG, API_BASE, TEST_DATA, WELCOME_QUESTIONS, INSIDE_SCRUM_QUESTIONS, OUTSIDE_SCRUM_QUESTIONS, SYNTHETIC_PATIENTS } from './config';
+import { OAUTH_CONFIG, API_BASE, TEST_DATA, WELCOME_QUESTIONS, INSIDE_SCRUM_QUESTIONS, OUTSIDE_SCRUM_QUESTIONS, DEFAULT_PATIENTS } from './config';
 import ChatBox from './components/ChatBox';
 import VoiceAgentTester from './components/VoiceAgentTester';
 import VoiceEnrollment from './components/VoiceEnrollment';
+import WebSocketInitTester from './components/WebSocketInitTester';
 
 const TABS = [
   { id: 'welcome', label: 'Welcome Chat', icon: MessageSquare, color: 'blue' },
@@ -15,6 +16,7 @@ const TABS = [
   { id: 'ai_job', label: 'AI Job Tester', icon: TestTube2, color: 'orange' },
   { id: 'voice_enroll', label: 'Voice Enrollment', icon: Users, color: 'teal' },
   { id: 'voice_agent', label: 'Voice Agent', icon: Mic, color: 'red' },
+  { id: 'ws_init', label: 'WS Init Test', icon: Wifi, color: 'cyan' },
 ];
 
 export default function App() {
@@ -25,14 +27,21 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [authError, setAuthError] = useState(null);
   const [selectedPatient, setSelectedPatient] = useState({
-    patientId: 3001,
-    patientName: 'Gilian Negata',
+    patientId: TEST_DATA.patientId,
+    patientName: 'Patient 1 (from DB)',
   });
+  const [realPatients, setRealPatients] = useState([]);
+  const [patientsLoading, setPatientsLoading] = useState(false);
   const [aiJobLoading, setAiJobLoading] = useState(false);
   const [aiJobResult, setAiJobResult] = useState(null);
   const [aiJobAllLoading, setAiJobAllLoading] = useState(false);
   const [aiJobAllResult, setAiJobAllResult] = useState(null);
-  const [aiJobPatientId, setAiJobPatientId] = useState(3001);
+  const [aiJobPatientId, setAiJobPatientId] = useState(TEST_DATA.patientId);
+
+  // Refs for chatbox instances
+  const welcomeChatRef = useRef(null);
+  const insideScrumChatRef = useRef(null);
+  const outsideScrumChatRef = useRef(null);
 
   // Parse JWT payload
   const parseToken = useCallback((accessToken) => {
@@ -155,6 +164,73 @@ export default function App() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
+  };
+
+  // Load real patients from DB when authenticated
+  const loadRealPatients = useCallback(async (accessToken) => {
+    if (!accessToken) return;
+    setPatientsLoading(true);
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const res = await fetch(`${API_BASE}/api/units/today?date=${today}&locationId=${TEST_DATA.locationId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const data = await res.json();
+      console.log('[Tester] Patients API response:', data);
+
+      // Handle both { success, data: [...] } and direct array
+      const records = Array.isArray(data.data) ? data.data : Array.isArray(data) ? data : [];
+      if (records.length > 0) {
+        // Deduplicate by PatientID
+        const seen = new Set();
+        const patients = [];
+        for (const p of records) {
+          const pid = p.PatientID || p.patientId || p.patientid;
+          if (!pid || seen.has(pid)) continue;
+          seen.add(pid);
+          patients.push({
+            id: pid,
+            name: p.PatientName || p.Name || p.patientName || `Patient ${pid.substring(0, 8)}`,
+            unitId: p.UnitID || p.unitId,
+            unitName: p.UnitName || p.unitName || '',
+            diagnosis: p.Diagnosis || p.PrimaryDiagnosis || p.diagnosis || '',
+          });
+        }
+        if (patients.length > 0) {
+          console.log(`[Tester] Loaded ${patients.length} patients from DB`);
+          setRealPatients(patients);
+          setSelectedPatient({
+            patientId: patients[0].id,
+            patientName: patients[0].name,
+          });
+          setAiJobPatientId(patients[0].id);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load patients:', err);
+    } finally {
+      setPatientsLoading(false);
+    }
+  }, []);
+
+  // Load patients when token is available
+  useEffect(() => {
+    if (token && tokenInfo) {
+      loadRealPatients(token);
+    }
+  }, [token, tokenInfo, loadRealPatients]);
+
+  // Get the patient list (real or fallback)
+  const patientList = realPatients.length > 0 ? realPatients : DEFAULT_PATIENTS;
+
+  // Handle patient selection change
+  const handlePatientChange = (e) => {
+    const pid = e.target.value;
+    const p = patientList.find(pt => pt.id === pid);
+    setSelectedPatient({
+      patientId: pid,
+      patientName: p?.name || '',
+    });
   };
 
   // AI Job test functions
@@ -308,8 +384,13 @@ export default function App() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <ChatBox
+                ref={welcomeChatRef}
                 token={token}
                 context="welcome"
+                contextData={{
+                  locationId: TEST_DATA.locationId,
+                  unitId: TEST_DATA.unitId,
+                }}
                 title="Welcome - FOCUS AI Assistant"
                 placeholder="Ask about today's schedule, patients, or clinical data..."
                 suggestedQuestions={WELCOME_QUESTIONS}
@@ -348,13 +429,34 @@ export default function App() {
                   </li>
                 </ul>
               </div>
-              <div className="bg-blue-50 rounded-xl border border-blue-200 p-4">
-                <h4 className="text-sm font-medium text-blue-800 mb-1">Data Source</h4>
-                <p className="text-xs text-blue-600">
-                  Uses synthetic placeholder data in <code>chat.repository.js</code>.
-                  8 sample patients, schedules, labs, UDS, PHQ-9, imaging, and care actions.
-                  Will switch to real DB when SPs are ready.
+              <div className="bg-green-50 rounded-xl border border-green-200 p-4">
+                <h4 className="text-sm font-medium text-green-800 mb-1">Data Source</h4>
+                <p className="text-xs text-green-600">
+                  Connected to real DB via stored procedures.
+                  All chat functions call live SPs: sGetPatientsToday, sGetPatientsByFilter,
+                  sGetUnreviewedItems, sGetProceduresToday, sSearchPatients, sGetPatientOverview,
+                  sGetPatientUDS, sGetPatientLabs, sGetPatientPHQ9, sGetPatientDocuments.
                 </p>
+              </div>
+
+              {/* Test Questions */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                <h4 className="text-sm font-semibold text-gray-800 mb-2">Test Questions</h4>
+                <div className="space-y-1.5 max-h-[400px] overflow-y-auto">
+                  {WELCOME_QUESTIONS.map((item, i) => (
+                    <button
+                      key={i}
+                      onClick={() => welcomeChatRef.current?.sendMessage(item.q)}
+                      className="w-full text-left text-xs bg-blue-50 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-100 transition-colors border border-blue-200 group"
+                    >
+                      <span className="font-medium">{item.q}</span>
+                      <span className="block text-[10px] text-gray-500 mt-0.5 group-hover:text-gray-700">
+                        fn: <span className="font-mono">{item.fn}</span>
+                        {item.expect && <> &middot; {item.expect}</>}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -364,12 +466,14 @@ export default function App() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <ChatBox
+                ref={insideScrumChatRef}
                 token={token}
                 context="inside_scrum"
                 contextData={{
                   patientId: selectedPatient.patientId,
                   patientName: selectedPatient.patientName,
-                  unitId: 1,
+                  unitId: TEST_DATA.unitId,
+                  locationId: TEST_DATA.locationId,
                 }}
                 title="Inside Scrum - Patient AI Assistant"
                 placeholder={`Ask about ${selectedPatient.patientName}...`}
@@ -386,26 +490,25 @@ export default function App() {
                   Active during scrum with a specific patient selected. Text-only — no voice chat (WebSocket is running for speaker identification).
                 </p>
 
-                {/* Patient Selector */}
+                {/* Patient Selector — Real DB patients */}
                 <div className="mb-3">
-                  <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Select Patient</label>
+                  <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Select Patient {patientsLoading && '(loading...)'}
+                  </label>
                   <select
                     value={selectedPatient.patientId}
-                    onChange={(e) => {
-                      const p = SYNTHETIC_PATIENTS.find(sp => sp.id === Number(e.target.value));
-                      setSelectedPatient({
-                        patientId: Number(e.target.value),
-                        patientName: p?.name || '',
-                      });
-                    }}
+                    onChange={handlePatientChange}
                     className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500"
                   >
-                    {SYNTHETIC_PATIENTS.map(p => (
+                    {patientList.map(p => (
                       <option key={p.id} value={p.id}>
-                        {p.name} — {p.diagnosis.split(',')[0]}
+                        {p.name}{p.diagnosis ? ` — ${p.diagnosis.split(',')[0]}` : ''}
                       </option>
                     ))}
                   </select>
+                  {realPatients.length > 0 && (
+                    <p className="text-[10px] text-green-600 mt-1">{realPatients.length} patients loaded from DB</p>
+                  )}
                 </div>
 
                 <ul className="text-sm text-gray-500 space-y-1.5">
@@ -431,6 +534,26 @@ export default function App() {
                   </li>
                 </ul>
               </div>
+
+              {/* Test Questions */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                <h4 className="text-sm font-semibold text-gray-800 mb-2">Test Questions</h4>
+                <div className="space-y-1.5 max-h-[400px] overflow-y-auto">
+                  {INSIDE_SCRUM_QUESTIONS.map((item, i) => (
+                    <button
+                      key={i}
+                      onClick={() => insideScrumChatRef.current?.sendMessage(item.q)}
+                      className="w-full text-left text-xs bg-green-50 text-green-700 px-3 py-2 rounded-lg hover:bg-green-100 transition-colors border border-green-200 group"
+                    >
+                      <span className="font-medium">{item.q}</span>
+                      <span className="block text-[10px] text-gray-500 mt-0.5 group-hover:text-gray-700">
+                        fn: <span className="font-mono">{item.fn}</span>
+                        {item.expect && <> &middot; {item.expect}</>}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -439,12 +562,14 @@ export default function App() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <ChatBox
+                ref={outsideScrumChatRef}
                 token={token}
                 context="outside_scrum"
                 contextData={{
                   patientId: selectedPatient.patientId,
                   patientName: selectedPatient.patientName,
-                  unitId: 1,
+                  unitId: TEST_DATA.unitId,
+                  locationId: TEST_DATA.locationId,
                 }}
                 title="Outside Scrum - Patient Voice Assistant"
                 placeholder={`Ask about ${selectedPatient.patientName}...`}
@@ -462,26 +587,25 @@ export default function App() {
                   1-on-1 session with a patient outside the scrum. Voice chat enabled — WebSocket is free (no scrum running).
                 </p>
 
-                {/* Patient Selector */}
+                {/* Patient Selector — Real DB patients */}
                 <div className="mb-3">
-                  <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Select Patient</label>
+                  <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Select Patient {patientsLoading && '(loading...)'}
+                  </label>
                   <select
                     value={selectedPatient.patientId}
-                    onChange={(e) => {
-                      const p = SYNTHETIC_PATIENTS.find(sp => sp.id === Number(e.target.value));
-                      setSelectedPatient({
-                        patientId: Number(e.target.value),
-                        patientName: p?.name || '',
-                      });
-                    }}
+                    onChange={handlePatientChange}
                     className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500"
                   >
-                    {SYNTHETIC_PATIENTS.map(p => (
+                    {patientList.map(p => (
                       <option key={p.id} value={p.id}>
-                        {p.name} — {p.diagnosis.split(',')[0]}
+                        {p.name}{p.diagnosis ? ` — ${p.diagnosis.split(',')[0]}` : ''}
                       </option>
                     ))}
                   </select>
+                  {realPatients.length > 0 && (
+                    <p className="text-[10px] text-purple-600 mt-1">{realPatients.length} patients loaded from DB</p>
+                  )}
                 </div>
 
                 <ul className="text-sm text-gray-500 space-y-1.5">
@@ -515,6 +639,26 @@ export default function App() {
                   Inside Scrum has no voice since WebSocket is active for speaker identification.
                 </p>
               </div>
+
+              {/* Test Questions */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                <h4 className="text-sm font-semibold text-gray-800 mb-2">Test Questions</h4>
+                <div className="space-y-1.5 max-h-[400px] overflow-y-auto">
+                  {OUTSIDE_SCRUM_QUESTIONS.map((item, i) => (
+                    <button
+                      key={i}
+                      onClick={() => outsideScrumChatRef.current?.sendMessage(item.q)}
+                      className="w-full text-left text-xs bg-purple-50 text-purple-700 px-3 py-2 rounded-lg hover:bg-purple-100 transition-colors border border-purple-200 group"
+                    >
+                      <span className="font-medium">{item.q}</span>
+                      <span className="block text-[10px] text-gray-500 mt-0.5 group-hover:text-gray-700">
+                        fn: <span className="font-mono">{item.fn}</span>
+                        {item.expect && <> &middot; {item.expect}</>}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -528,17 +672,19 @@ export default function App() {
                 AI Batch — Single Patient
               </h3>
               <p className="text-sm text-gray-500 mb-4">
-                Generate AI scrum content (presentation, encounter prep, last visit summary, trends, care action suggestions) for one synthetic patient.
+                Generate AI scrum content (presentation, encounter prep, last visit summary, trends, care action suggestions) for one patient.
               </p>
               <div className="mb-4">
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Select Patient</label>
+                <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Select Patient {patientsLoading && '(loading...)'}
+                </label>
                 <select
                   value={aiJobPatientId}
-                  onChange={(e) => setAiJobPatientId(Number(e.target.value))}
+                  onChange={(e) => setAiJobPatientId(e.target.value)}
                   className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-orange-500"
                 >
-                  {SYNTHETIC_PATIENTS.map(p => (
-                    <option key={p.id} value={p.id}>{p.name} (ID: {p.id}) — {p.diagnosis.split(',')[0]}</option>
+                  {patientList.map(p => (
+                    <option key={p.id} value={p.id}>{p.name} — {p.id?.substring(0, 8)}...</option>
                   ))}
                 </select>
               </div>
@@ -570,11 +716,12 @@ export default function App() {
                 AI Batch — All Patients
               </h3>
               <p className="text-sm text-gray-500 mb-4">
-                Generate AI scrum content for all synthetic patients (3001, 3002, 3003, 3005). Takes ~30 seconds.
+                Generate AI scrum content for all patients at the configured location. May take 30+ seconds.
               </p>
               <div className="mb-4 bg-orange-50 rounded-lg p-3 border border-orange-200">
                 <p className="text-xs text-orange-700">
-                  <strong>Patients:</strong> {SYNTHETIC_PATIENTS.filter(p => [3001,3002,3003,3005].includes(p.id)).map(p => p.name).join(', ')}
+                  <strong>Location:</strong> {TEST_DATA.locationId.substring(0, 8)}...
+                  {realPatients.length > 0 && <> &middot; <strong>{realPatients.length} patients</strong> loaded</>}
                 </p>
               </div>
               <button
@@ -608,6 +755,10 @@ export default function App() {
 
         {activeTab === 'voice_agent' && (
           <VoiceAgentTester token={token} />
+        )}
+
+        {activeTab === 'ws_init' && (
+          <WebSocketInitTester token={token} />
         )}
       </main>
     </div>

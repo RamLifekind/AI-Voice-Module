@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { Users, Mic, StopCircle, X, Loader, CheckCircle, XCircle, Play } from 'lucide-react';
+import { Users, Mic, StopCircle, X, Loader, CheckCircle, XCircle, Play, Trash2 } from 'lucide-react';
 import { VOICE_BACKEND } from '../config';
 
 const ENROLLMENT_USERS = [
@@ -23,12 +23,37 @@ const wsConfig = {
   backendWs: VOICE_BACKEND.replace('https://', 'wss://'),
 };
 
+// Fetch a single-use ticket for voice backend WebSocket auth
+async function getVoiceWsTicket(token) {
+  console.log('[VoiceWS] Fetching ticket from:', `${VOICE_BACKEND}/api/ws/ticket`);
+  const res = await fetch(`${VOICE_BACKEND}/api/ws/ticket`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  console.log('[VoiceWS] Ticket response status:', res.status);
+  const text = await res.text();
+  console.log('[VoiceWS] Ticket response body:', text);
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Ticket endpoint returned non-JSON (${res.status}): ${text.substring(0, 200)}`);
+  }
+  if (!data.ticket) {
+    throw new Error(data.message || `Ticket failed (${res.status}): ${text.substring(0, 200)}`);
+  }
+  return data.ticket;
+}
+
 export default function VoiceEnrollment({ token }) {
   const [selectedUser, setSelectedUser] = useState(null);
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [messages, setMessages] = useState([]);
   const [logs, setLogs] = useState([]);
+  const [deleteId, setDeleteId] = useState('');
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteResult, setDeleteResult] = useState(null);
 
   const wsRef = useRef(null);
   const audioCtxRef = useRef(null);
@@ -116,18 +141,28 @@ export default function VoiceEnrollment({ token }) {
 
     if (wsRef.current) wsRef.current.close();
 
-    const wsUrl = token
-      ? `${wsConfig.backendWs}/enroll?token=${token}`
-      : `${wsConfig.backendWs}/enroll`;
-
     // Use functional setState so logs don't get lost
     setLogs([{ msg: `Connecting for ${user.displayName}...`, type: 'info', time: new Date().toLocaleTimeString() }]);
+
+    let wsUrl;
+    try {
+      if (token) {
+        const ticket = await getVoiceWsTicket(token);
+        wsUrl = `${wsConfig.backendWs}/enroll?ticket=${ticket}`;
+      } else {
+        wsUrl = `${wsConfig.backendWs}/enroll`;
+      }
+    } catch (err) {
+      setLogs(prev => [...prev, { msg: `Failed to get WS ticket: ${err.message}`, type: 'error', time: new Date().toLocaleTimeString() }]);
+      setIsEnrolling(false);
+      return;
+    }
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      setLogs(prev => [...prev, { msg: 'Connected to /enroll', type: 'success', time: new Date().toLocaleTimeString() }]);
+      setLogs(prev => [...prev, { msg: 'Connected to /enroll via ticket', type: 'success', time: new Date().toLocaleTimeString() }]);
       ws.send(JSON.stringify({ type: 'start', userNum: user.id }));
       setLogs(prev => [...prev, { msg: `Sent enrollment start (userNum=${user.id})`, type: 'info', time: new Date().toLocaleTimeString() }]);
       startRecording();
@@ -173,6 +208,24 @@ export default function VoiceEnrollment({ token }) {
     setIsEnrolling(false);
     addLog('Stopped enrollment', 'info');
   }, [stopRecording, addLog]);
+
+  const deleteVoiceProfile = async () => {
+    if (!deleteId.trim()) return;
+    setDeleteLoading(true);
+    setDeleteResult(null);
+    try {
+      const res = await fetch(`${VOICE_BACKEND}/api/voice-profiles/${deleteId.trim()}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      setDeleteResult(data);
+    } catch (err) {
+      setDeleteResult({ success: false, message: err.message });
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
 
   const closeDialog = () => {
     if (isEnrolling) stopEnrollment();
@@ -226,6 +279,39 @@ export default function VoiceEnrollment({ token }) {
             </div>
           </button>
         ))}
+      </div>
+
+      {/* Delete Voice Profile */}
+      <div className="mt-8 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2 mb-1">
+          <Trash2 className="w-5 h-5 text-red-600" />
+          Delete Voice Profile
+        </h3>
+        <p className="text-sm text-gray-500 mb-4">
+          Enter a provider OID to delete their voice profile from blob storage.
+        </p>
+        <div className="flex gap-3">
+          <input
+            type="text"
+            value={deleteId}
+            onChange={(e) => { setDeleteId(e.target.value); setDeleteResult(null); }}
+            placeholder="Enter provider OID (e.g. AC26D32E-7C56-4E3E-866D-0086936B1238)"
+            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-red-500 focus:border-red-500"
+          />
+          <button
+            onClick={deleteVoiceProfile}
+            disabled={!deleteId.trim() || deleteLoading || !token}
+            className="px-5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+          >
+            {deleteLoading ? <Loader className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+            Delete
+          </button>
+        </div>
+        {deleteResult && (
+          <div className={`mt-3 text-sm px-3 py-2 rounded-lg ${deleteResult.success ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+            {deleteResult.success ? `Profile deleted. Profiles remaining: ${deleteResult.profilesLoaded}` : `Error: ${deleteResult.message}`}
+          </div>
+        )}
       </div>
 
       {/* Enrollment Dialog */}
